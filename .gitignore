@@ -1,0 +1,17 @@
+# Agent の状態・一時ファイル・worktree
+.codex/state/
+.codex/tmp/
+.claude/worktrees/
+
+# ローカル専用の secret や生成物
+.local/
+
+# 一般的な生成物・依存
+.cache/
+.build/
+node_modules/
+__pycache__/
+.venv/
+dist/
+target/
+*.tsbuildinfo
