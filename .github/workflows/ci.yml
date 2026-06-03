@@ -127,10 +127,6 @@ jobs:
         run: pnpm --filter dapp lint
         if: needs.detect-changes.outputs.dapp_changed == 'true'
 
-      - name: Lint Sui contract
-        run: pnpm --filter contract lint
-        if: needs.detect-changes.outputs.contract_changed == 'true'
-
       - name: Cache Sui CLI
         id: sui-cache
         uses: actions/cache@v5
@@ -179,6 +175,10 @@ jobs:
           chmod +x "$install_dir/sui"
           echo "$install_dir" >> "$GITHUB_PATH"
           "$install_dir/sui" --version
+
+      - name: Lint Sui contract
+        run: pnpm --filter contract lint
+        if: needs.detect-changes.outputs.contract_changed == 'true'
 
       - name: Build Sui contracts
         run: pnpm --filter contract build
