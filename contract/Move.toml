@@ -1,10 +1,13 @@
 [package]
-name = "contract"
-edition = "2024"         # edition = "legacy" to use legacy (pre-2024) Move
-# license = ""           # e.g., "MIT", "GPL", "Apache 2.0"
-# authors = ["..."]      # e.g., ["Joe Smith (joesmith@noemail.com)", "John Snow (johnsnow@noemail.com)"]
+name = "deep_arena"
+edition = "2024"
 
 [dependencies]
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/testnet" }
 
-# Read more about the package management system options:
-# https://docs.sui.io/guides/developer/sui-101/move-package-management
+# DeepBook Predict（Testnet統合ターゲット）
+# 注意: predict-testnet-4-16 はTestnet用。Mainnetでrev/IDを差し替えること。
+DeepBookPredict = { git = "https://github.com/MystenLabs/deepbookv3.git", subdir = "packages/predict", rev = "predict-testnet-4-16" }
+
+[addresses]
+deep_arena = "0x0"
