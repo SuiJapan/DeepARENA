@@ -123,8 +123,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Lint Next.js app
-        run: pnpm --filter dapp lint
+      - name: Check Next.js app
+        run: pnpm check:ts:ci
         if: needs.detect-changes.outputs.dapp_changed == 'true'
 
       - name: Cache Sui CLI
@@ -176,16 +176,8 @@ jobs:
           echo "$install_dir" >> "$GITHUB_PATH"
           "$install_dir/sui" --version
 
-      - name: Lint Sui contract
-        run: pnpm --filter contract lint
-        if: needs.detect-changes.outputs.contract_changed == 'true'
-
-      - name: Build Sui contracts
-        run: pnpm --filter contract build
-        if: needs.detect-changes.outputs.contract_changed == 'true'
-
-      - name: Test Sui contracts
-        run: pnpm --filter contract test
+      - name: Check Sui contracts
+        run: pnpm check:move
         if: needs.detect-changes.outputs.contract_changed == 'true'
 
       - name: Build Next.js app

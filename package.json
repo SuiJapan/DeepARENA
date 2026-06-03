@@ -9,9 +9,17 @@
   "scripts": {
     "dev": "pnpm --filter dapp dev",
     "build": "pnpm -r build",
+    "check": "pnpm check:ts && pnpm check:move",
+    "check:ci": "pnpm check:ts:ci && pnpm check:move",
+    "check:move": "pnpm --filter contract exec sui move build --force --lint --warnings-are-errors && pnpm --filter contract exec sui move test",
+    "check:ts": "pnpm --filter dapp exec biome check --write . && pnpm typecheck:ts",
+    "check:ts:ci": "pnpm --filter dapp exec biome check . && pnpm typecheck:ts",
+    "format:ts": "pnpm --filter dapp exec biome check --write .",
+    "format": "pnpm format:ts",
     "lint": "pnpm -r lint",
-    "format": "pnpm -r format",
     "test": "pnpm -r test",
+    "typecheck": "pnpm typecheck:ts",
+    "typecheck:ts": "pnpm --filter dapp exec tsc --noEmit",
     "dapp": "pnpm --filter dapp",
     "contract": "pnpm --filter contract"
   }
