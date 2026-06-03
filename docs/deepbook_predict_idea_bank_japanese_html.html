@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DeepBook Predict トラック説明｜初心者向け要約</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --paper: #ffffff;
+      --ink: #142033;
+      --muted: #5c6b80;
+      --line: #dfe6ef;
+      --blue: #2557d6;
+      --blue-soft: #eaf0ff;
+      --green: #0f8a5f;
+      --green-soft: #e7f7f0;
+      --orange: #cc6b00;
+      --orange-soft: #fff2df;
+      --red: #c83232;
+      --red-soft: #fff0f0;
+      --purple: #7752d6;
+      --purple-soft: #f1ecff;
+      --shadow: 0 12px 28px rgba(20, 32, 51, 0.08);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Yu Gothic", Meiryo, sans-serif;
+      background: radial-gradient(circle at top left, #e7efff 0%, transparent 35%), var(--bg);
+      color: var(--ink);
+      line-height: 1.75;
+    }
+
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .page {
+      width: min(1120px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 32px 0 72px;
+    }
+
+    .hero {
+      background: linear-gradient(135deg, #0e1b33 0%, #2449c9 58%, #2da7ff 100%);
+      color: white;
+      border-radius: 28px;
+      padding: 40px;
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -100px;
+      top: -120px;
+      width: 340px;
+      height: 340px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.14);
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.16);
+      border: 1px solid rgba(255,255,255,0.24);
+      font-weight: 700;
+      font-size: 13px;
+      letter-spacing: .04em;
+    }
+
+    h1 {
+      margin: 18px 0 12px;
+      font-size: clamp(32px, 6vw, 56px);
+      line-height: 1.08;
+      letter-spacing: -0.04em;
+    }
+
+    .hero p {
+      max-width: 800px;
+      margin: 0;
+      color: rgba(255,255,255,0.88);
+      font-size: 18px;
+    }
+
+    .hero strong { color: #fff; }
+
+    .nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 22px 0 0;
+      position: relative;
+      z-index: 1;
+    }
+
+    .nav a {
+      display: inline-block;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.15);
+      color: white;
+      font-size: 13px;
+      font-weight: 700;
+      border: 1px solid rgba(255,255,255,0.2);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 18px;
+      margin-top: 20px;
+    }
+
+    .card {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 24px;
+      box-shadow: var(--shadow);
+    }
+
+    .span-12 { grid-column: span 12; }
+    .span-8 { grid-column: span 8; }
+    .span-6 { grid-column: span 6; }
+    .span-4 { grid-column: span 4; }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 28px;
+      line-height: 1.25;
+      letter-spacing: -0.03em;
+    }
+
+    h3 {
+      margin: 0 0 10px;
+      font-size: 20px;
+      line-height: 1.35;
+    }
+
+    h4 {
+      margin: 14px 0 8px;
+      font-size: 16px;
+      line-height: 1.4;
+    }
+
+    p { margin: 0 0 12px; }
+    p:last-child { margin-bottom: 0; }
+
+    ul, ol { margin: 10px 0 0; padding-left: 1.25em; }
+    li { margin: 6px 0; }
+
+    .lead {
+      font-size: 18px;
+      color: var(--muted);
+    }
+
+    .one-liner {
+      border-left: 6px solid var(--blue);
+      background: var(--blue-soft);
+      padding: 18px 20px;
+      border-radius: 14px;
+      font-size: 19px;
+      font-weight: 800;
+    }
+
+    .note, .explain, .warning, .fact, .status {
+      border-radius: 14px;
+      padding: 14px 16px;
+      margin-top: 12px;
+      border: 1px solid transparent;
+    }
+
+    .note { background: var(--blue-soft); border-color: #cbd9ff; }
+    .explain { background: var(--green-soft); border-color: #bee9d7; }
+    .warning { background: var(--orange-soft); border-color: #ffd6a3; }
+    .fact { background: #f7f9fc; border-color: var(--line); }
+    .status { background: var(--purple-soft); border-color: #d8cbff; }
+
+    .label {
+      display: inline-block;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .05em;
+      padding: 2px 9px;
+      border-radius: 999px;
+      margin-bottom: 7px;
+    }
+
+    .label.blue { background: var(--blue-soft); color: var(--blue); }
+    .label.green { background: var(--green-soft); color: var(--green); }
+    .label.orange { background: var(--orange-soft); color: var(--orange); }
+    .label.red { background: var(--red-soft); color: var(--red); }
+    .label.purple { background: var(--purple-soft); color: var(--purple); }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .step {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 16px;
+      background: #fbfcff;
+      position: relative;
+    }
+
+    .step .num {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--blue);
+      color: white;
+      font-weight: 900;
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+
+    .term {
+      border-bottom: 2px dotted #8aa4d7;
+      font-weight: 800;
+      cursor: help;
+    }
+
+    .cards-ideas {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+      margin-top: 14px;
+    }
+
+    .idea {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      background: #fff;
+    }
+
+    .idea .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 10px 0;
+    }
+
+    .tag {
+      display: inline-flex;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: #eef3fb;
+      color: #3a4b62;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .tag.diff-low { background: var(--green-soft); color: var(--green); }
+    .tag.diff-mid { background: var(--orange-soft); color: var(--orange); }
+    .tag.diff-high { background: var(--red-soft); color: var(--red); }
+
+    .table-wrap {
+      overflow-x: auto;
+      margin-top: 12px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: white;
+      min-width: 720px;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 13px 14px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+
+    th {
+      background: #f3f6fb;
+      font-size: 13px;
+      color: #38475b;
+      white-space: nowrap;
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    .glossary {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .glossary-item {
+      background: #fbfcff;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+    }
+
+    .glossary-item b { display: block; margin-bottom: 4px; }
+
+    .small { font-size: 13px; color: var(--muted); }
+    code {
+      background: #edf2fa;
+      padding: 2px 6px;
+      border-radius: 7px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .92em;
+    }
+
+    .checklist li::marker { color: var(--green); font-weight: 900; }
+
+    .footer {
+      margin-top: 24px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+
+    @media (max-width: 860px) {
+      .hero { padding: 28px; }
+      .span-8, .span-6, .span-4 { grid-column: span 12; }
+      .flow { grid-template-columns: 1fr; }
+      .cards-ideas { grid-template-columns: 1fr; }
+      .glossary { grid-template-columns: 1fr; }
+      .page { width: min(100% - 20px, 1120px); }
+    }
+
+    @media print {
+      body { background: white; }
+      .page { width: 100%; padding: 0; }
+      .hero, .card, .idea { box-shadow: none; }
+      .nav { display: none; }
+      a { color: inherit; text-decoration: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="eyebrow">DeepBook Predict Track / 初心者向け整理版</div>
+      <h1>DeepBook Predict を、<br />予測市場の新しい金融インフラとして理解する。</h1>
+      <p>
+        DeepBook Predict は、Sui上で動く「予測市場 × オプション市場」のような仕組みです。
+        単なる賭けアプリではなく、価格・期限・リスク・流動性をプログラムで扱える土台を作ろうとしているトラックです。
+      </p>
+      <div class="nav">
+        <a href="#summary">全体像</a>
+        <a href="#problem">何が問題か</a>
+        <a href="#predict">DeepBook Predictとは</a>
+        <a href="#build">作るもの</a>
+        <a href="#ideas">アイデア10個</a>
+        <a href="#glossary">用語集</a>
+        <a href="#refs">参考リンク</a>
+      </div>
+    </section>
+
+    <section id="summary" class="grid">
+      <article class="card span-12">
+        <h2>まず一言でいうと</h2>
+        <div class="one-liner">
+          DeepBook Predict は、「いつまでに、どの価格帯になるか」「どの条件が成立するか」を、プログラムで価格付けして取引できる、Sui上の予測市場です。
+        </div>
+        <div class="explain">
+          <span class="label green">初心者向け補足</span>
+          <p>
+            予測市場とは、未来の出来事に対して、参加者がお金を出して予想を売買する市場です。
+            元資料ではBTC価格を使った例が多く出ていますが、主題はBTCそのものではありません。DeepBook Predict が目指すのは、単なる YES / NO の賭けではなく、金融商品のように細かく価格設計できる市場です。
+          </p>
+        </div>
+      </article>
+
+      <article class="card span-4">
+        <h3>確定していること</h3>
+        <ul class="checklist">
+          <li>DeepBook Predict は Sui testnet で稼働中。</li>
+          <li>BTCの短時間オラクル、公開 indexer / API、dUSDC が用意されている。</li>
+          <li>DeepBook spot、deepbook_margin、iron_bank など一部の関連DeFiは mainnet 側に存在している。</li>
+        </ul>
+      </article>
+
+      <article class="card span-4">
+        <h3>未確定・予定</h3>
+        <ul>
+          <li>DeepBook Predict の mainnet ローンチは予定段階。</li>
+          <li>ハッカソン作品は、mainnet 公開日に再デプロイされることが期待されている。</li>
+          <li>Predict 用の dUSDC は公式USDCではなく、testnet用の専用トークン。</li>
+        </ul>
+      </article>
+
+      <article class="card span-4">
+        <h3>このトラックの本質</h3>
+        <p>
+          「ただ予想するアプリ」を作るのではなく、予測市場をDeFiの部品として使えるようにすることが狙いです。
+        </p>
+        <p class="small">
+          例：Vault、Bot、分析ダッシュボード、Telegram Bot、リスク管理ツール、裁定取引Botなど。
+        </p>
+      </article>
+    </section>
+
+    <section id="problem" class="grid">
+      <article class="card span-8">
+        <h2>現在の予測市場の問題</h2>
+        <p class="lead">
+          既存の予測市場は便利ですが、本格的な金融市場として見ると、まだ浅く、分断されています。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>問題</th>
+                <th>初心者向けの意味</th>
+                <th>なぜ重要か</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>市場が分断されている</td>
+                <td>Polymarket、Kalshi、スポーツブックなどが別々に存在し、価格や流動性がつながっていない。</td>
+                <td>価格差を比較しにくく、BotやDeFiで組み合わせにくい。</td>
+              </tr>
+              <tr>
+                <td>流動性が薄い</td>
+                <td>買いたい人・売りたい人が十分にいないと、思った価格で取引しづらい。</td>
+                <td>大きな資金を入れにくく、プロ向け戦略が成立しにくい。</td>
+              </tr>
+              <tr>
+                <td>YES / NO 型が中心</td>
+                <td>「起きるか、起きないか」だけで、価格帯や期限を細かく設計しにくい。</td>
+                <td>高度な金融商品やリスク移転に向かない。</td>
+              </tr>
+              <tr>
+                <td>決済が遅い</td>
+                <td>結果が出てから資金を受け取るまで時間がかかる。</td>
+                <td>短期トレードや自動化Botと相性が悪い。</td>
+              </tr>
+              <tr>
+                <td>Volatility Surface がない</td>
+                <td>価格変動の大きさを、期限や価格帯ごとに体系的に扱えない。</td>
+                <td>オプションのような本格的な価格計算ができない。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <aside class="card span-4">
+        <h3>金融知識ゼロ向け</h3>
+        <div class="explain">
+          <span class="label green">Volatility Surface とは</span>
+          <p>
+            日本語では「ボラティリティ・サーフェス」。ざっくり言うと、
+            「どの価格帯・どの期限では、どれくらい価格が動きそうか」を立体地図のように表したものです。
+          </p>
+        </div>
+        <div class="note">
+          <span class="label blue">なぜ必要か</span>
+          <p>
+            たとえば「BTCが15分後に少し上がる確率」と「1週間後に大暴落する確率」は全く違います。
+            その違いを雑に扱うと、価格が不自然になり、プロの戦略やリスク管理が作りにくくなります。
+          </p>
+        </div>
+      </aside>
+    </section>
+
+    <section id="predict" class="grid">
+      <article class="card span-12">
+        <h2>DeepBook Predict が提供しようとしている土台</h2>
+        <p class="lead">
+          DeepBook Predict は、予測市場を「アプリ」ではなく「Sui DeFiで使える金融部品」として扱えるようにします。
+        </p>
+        <div class="flow">
+          <div class="step">
+            <div class="num">1</div>
+            <h3>価格帯と期限を細かく扱う</h3>
+            <p>
+              事前に手作業で用意されたイベントだけでなく、さまざまな価格帯や期限を価格計算できる。
+            </p>
+          </div>
+          <div class="step">
+            <div class="num">2</div>
+            <h3>短い期限で回せる</h3>
+            <p>
+              週単位ではなく、15分・30分のような短いサイクルで市場を回せる設計を目指す。
+            </p>
+          </div>
+          <div class="step">
+            <div class="num">3</div>
+            <h3>Vault が流動性を出す</h3>
+            <p>
+              常に相手方となる資金プールを用意し、取引しやすい状態を作る。
+            </p>
+          </div>
+          <div class="step">
+            <div class="num">4</div>
+            <h3>Sui DeFiと合体できる</h3>
+            <p>
+              margin、lending、structured vault、botなど、他のDeFi部品と組み合わせられる。
+            </p>
+          </div>
+        </div>
+        <div class="warning">
+          <span class="label orange">重要</span>
+          <p>
+            この資料の文脈では、DeepBook Predict は「賭けアプリ」ではなく、価格予測・リスク管理・流動性提供・自動運用を組み合わせるための基盤として扱われています。
+          </p>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid">
+      <article class="card span-6">
+        <h2>現在使えるもの</h2>
+        <ul>
+          <li><strong>Predict protocol：</strong>Sui testnet で稼働中。</li>
+          <li><strong>BTC oracle：</strong>短い時間間隔でBTC価格を参照する仕組み。</li>
+          <li><strong>Public indexer / API：</strong><code>predict-server.testnet.mystenlabs.com</code></li>
+          <li><strong>dUSDC：</strong>Predict用のtestnet quote asset。</li>
+          <li><strong>関連DeFi：</strong>DeepBook spot、deepbook_margin、iron_bank は mainnet 側に存在。</li>
+        </ul>
+      </article>
+
+      <article class="card span-6">
+        <h2>dUSDC の注意点</h2>
+        <div class="warning">
+          <span class="label orange">混同注意</span>
+          <p>
+            dUSDC は DeepBook Predict の testnet で使うためのトークンです。公式USDCそのものではありません。
+            ハッカソンで Predict を触るには、専用フォームから dUSDC を取得する必要があります。
+          </p>
+        </div>
+        <div class="explain">
+          <span class="label green">quote asset とは</span>
+          <p>
+            取引の基準になる通貨のことです。たとえば「BTCをUSDC建てで取引する」なら、USDCが quote asset です。
+          </p>
+        </div>
+      </article>
+    </section>
+
+    <section id="build" class="grid">
+      <article class="card span-12">
+        <h2>このハッカソンで作るもの</h2>
+        <p class="lead">
+          求められているのは、DeepBook Predict を使った実際に動くアプリ・サービス・Vault・Bot・分析ツールです。
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>カテゴリ</th>
+                <th>作るものの例</th>
+                <th>初心者向けの意味</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Vault / structured product</td>
+                <td>自動運用Vault、保険付きPLP、レンジ運用商品</td>
+                <td>ユーザーのお金を預かり、ルールに従って自動で予測ポジションを組む仕組み。</td>
+              </tr>
+              <tr>
+                <td>Cross-venue arbitrage</td>
+                <td>PredictとPolymarket、Hyperliquidなどの価格差を監視するBot</td>
+                <td>別々の市場で同じようなリスクの値段がズレたときに、その差を取りに行く。</td>
+              </tr>
+              <tr>
+                <td>Consumer frontend</td>
+                <td>Telegram Bot、PWA、ゲーム風アプリ、ランキングアプリ</td>
+                <td>専門家でなくても予測市場を触れるようにする入口。</td>
+              </tr>
+              <tr>
+                <td>Analytics / developer tooling</td>
+                <td>ボラティリティ可視化、PLPリスク分析、PnL分析、オラクル監視</td>
+                <td>市場が安全か、価格が妥当か、誰がどれだけ勝っているかを見える化する。</td>
+              </tr>
+              <tr>
+                <td>Keeper / orchestration</td>
+                <td>settled-redeem keeper、oracle monitor、withdrawal watcher</td>
+                <td>人間が毎回操作しなくても、必要な処理を自動で実行する裏方サービス。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card span-12">
+        <h2>最低要件</h2>
+        <ol>
+          <li><strong>DeepBook Predict contract を testnet で統合すること。</strong></li>
+          <li><strong>プロダクトを作る場合は、最初から最後まで動くこと。</strong><br />審査側はフロー全体をテストする。</li>
+          <li><strong>Vault戦略を作る場合は、適切なシミュレーション結果を出すこと。</strong><br />「儲かりそう」ではなく、数字で検証する必要がある。</li>
+        </ol>
+      </article>
+    </section>
+
+    <section id="ideas" class="grid">
+      <article class="card span-12">
+        <h2>Idea Bank：公式アイデアを、メンバー向けに日本語で整理</h2>
+        <p class="lead">
+          ここは公式が出しているアイデア例です。チェックリストではなく、出発点です。そのまま作っても、ひねっても、まったく別案にしても構いません。
+          英語名は残しつつ、チーム内で意味が通るように日本語で補足します。
+        </p>
+
+        <h3>1. Vaults & Structured Products：自動運用・金融商品系</h3>
+        <div class="cards-ideas">
+          <div class="idea">
+            <span class="label blue">Idea 1</span>
+            <h3>Range Ladder Vault</h3>
+            <p>
+              ユーザーの資金を、現在価格の近くにある複数の価格帯へ階段状に分散配置するVaultです。
+              期限が来たら結果を精算し、次の期限の価格帯へ自動で移していきます。
+            </p>
+            <div class="meta"><span class="tag diff-high">難易度：高</span><span class="tag">Vault</span><span class="tag">自動運用</span><span class="tag">価格帯戦略</span></div>
+            <div class="explain">
+              <span class="label green">初心者向けに言うと</span>
+              <p>
+                「BTCがピンポイントでいくらになるか」ではなく、「このあたりの範囲に収まりそう」という複数の範囲に資金を置く運用です。
+                ラダーは「はしご」の意味で、1点集中ではなく段階的に置くイメージです。
+              </p>
+            </div>
+          </div>
+
+          <div class="idea">
+            <span class="label blue">Idea 2</span>
+            <h3>PLP + Hedge Vault</h3>
+            <p>
+              Predictに流動性を供給してPLP収益を狙いながら、同時に大きな下落に備える保険的なポジションも買うVaultです。
+              公式文では「PLP yield minus crash insurance」、つまり「PLP利回りから暴落保険コストを引いた商品」と表現されています。
+            </p>
+            <div class="meta"><span class="tag diff-high">難易度：高</span><span class="tag">PLP</span><span class="tag">ヘッジ</span><span class="tag">リスク管理</span></div>
+            <div class="explain">
+              <span class="label green">初心者向けに言うと</span>
+              <p>
+                「利回りを取りに行くが、事故った時のダメージを減らす保険も付ける」商品です。
+                Hedgeは保険のようなものです。利益を増やすためというより、最悪ケースを小さくするために使います。
+              </p>
+            </div>
+          </div>
+
+          <div class="idea">
+            <span class="label blue">Idea 3</span>
+            <h3>BTC-collateral Predict Vault</h3>
+            <p>
+              BTC系トークンを預かり、DeepBook spotでdUSDCに変換し、Predict戦略に投入します。
+              最終的には運用結果をBTC建てでユーザーへ返す構成です。
+            </p>
+            <div class="meta"><span class="tag diff-high">難易度：高</span><span class="tag">BTC担保</span><span class="tag">DeepBook spot</span><span class="tag">Vault</span></div>
+            <div class="explain">
+              <span class="label green">初心者向けに言うと</span>
+              <p>
+                BTCを持っている人向けに、「BTCをただ保有するだけでなく、裏側でPredictを使って追加収益を狙う」商品です。
+                ただし、BTCからdUSDCへ換える部分、戻す部分、価格変動の扱いを正直に設計する必要があります。
+              </p>
+            </div>
+          </div>
+
+          <div class="idea">
+            <span class="label blue">Idea 4</span>
+            <h3>Three-Protocol Margin Loop</h3>
+            <p>
+              iron_bank のUSDsui share tokenを担保にし、deepbook_margin でdUSDCを借り、その借りた資金をPredictのレンジ戦略へ投入する構成です。
+              DeepBook Predict、deepbook_margin、iron_bankの3つを組み合わせます。
+            </p>
+            <div class="meta"><span class="tag diff-high">難易度：非常に高</span><span class="tag">DeFi composability</span><span class="tag">Margin</span><span class="tag">複数プロトコル連携</span></div>
+            <div class="explain">
+              <span class="label green">初心者向けに言うと</span>
+              <p>
+                Sui上の複数のDeFi部品をつないで、1つの高度な金融商品にするデモです。
+                見栄えは強いですが、借入・担保・清算・最悪ケースの設計が必要なので、実装難度はかなり高いです。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <h3 style="margin-top:24px;">2. Frontends & Consumer Apps：ユーザーが触る入口</h3>
+        <div class="cards-ideas">
+          <div class="idea">
+            <span class="label purple">Idea 5</span>
+            <h3>Telegram Quick-Predict Bot</h3>
+            <p>
+              Telegramで <code>/up 70k 15m 100usdc</code> のように入力すると、Predictの取引を実行できるBotです。
+              取引後は「今すぐredeem」「PnLを見る」「グループに共有」などをボタンで出せます。
+            </p>
+            <div class="meta"><span class="tag diff-mid">難易度：中</span><span class="tag">Telegram</span><span class="tag">初心者導線</span><span class="tag">Bot</span></div>
+            <div class="explain">
+              <span class="label green">初心者向けに言うと</span>
+              <p>
+                アプリを開かず、チャットだけで予測市場に参加できる入口です。
+                公式文では、初回利用時にPredictManagerを作り、dUSDCの準備も裏側で補助するような導線が想定されています。
+              </p>
+            </div>
+          </div>
+
+          <div class="idea">
+            <span class="label purple">Idea 6</span>
+            <h3>Streaks & Leaderboard PWA</h3>
+            <p>
+              毎日「BTCは上か下か」のような簡単な予測を出し、連勝数、週間ランキング、賞金プールで継続利用を促すPWAです。
+              NFTバッジやソーシャル要素を追加する余地もあります。
+            </p>
+            <div class="meta"><span class="tag diff-mid">難易度：中</span><span class="tag">PWA</span><span class="tag">ランキング</span><span class="tag">ゲーム性</span></div>
+            <div class="explain">
+              <span class="label green">初心者向けに言うと</span>
+              <p>
+                「今日の予想に参加して、連勝を伸ばす」スマホ向けゲームです。
+                PWAはアプリストアを通さず、Webサイトをスマホアプリ風に使える仕組みです。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <h3 style="margin-top:24px;">3. Bots, Keepers & Arbitrage：自動化・裁定取引系</h3>
+        <div class="cards-ideas">
+          <div class="idea">
+            <span class="label orange">Idea 7</span>
+            <h3>Vol-Arb Bot：Predict ↔ Polymarket</h3>
+            <p>
+              DeepBook Predictのボラティリティ価格を、PolymarketやHyperliquidなど別市場の価格と比較し、ズレが大きい時に取引するBotです。
+              発展形として、Hyperliquidのperpで価格変動リスクをヘッジし、ボラティリティの価格差だけを狙う案も示されています。
+            </p>
+            <div class="meta"><span class="tag diff-high">難易度：高</span><span class="tag">Arbitrage</span><span class="tag">Bot</span><span class="tag">外部市場比較</span></div>
+            <div class="explain">
+              <span class="label green">初心者向けに言うと</span>
+              <p>
+                「こっちの市場では高すぎる、あっちの市場では安すぎる」という価格のズレを見つけて取るBotです。
+                ただし、手数料、価格更新の遅れ、流動性不足、ヘッジ失敗などで損をする可能性もあります。
+              </p>
+            </div>
+          </div>
+
+          <div class="idea">
+            <span class="label orange">Idea 8</span>
+            <h3>Settled-Redeem Keeper Network</h3>
+            <p>
+              満期を迎えて決済可能になったポジションを監視し、まだredeemされていないものを見つけて、代わりに <code>predict::redeem_permissionless</code> を実行するKeeperです。
+              報酬の一部をチップとして受け取る設計もできます。
+            </p>
+            <div class="meta"><span class="tag diff-low">難易度：低〜中</span><span class="tag">Keeper</span><span class="tag">自動処理</span><span class="tag">実用系</span></div>
+            <div class="explain">
+              <span class="label green">初心者向けに言うと</span>
+              <p>
+                「受け取り忘れている報酬を、代わりに回収してあげる自動係」です。
+                派手さは弱いですが、実用性があり、ハッカソンでも動かしやすい部類です。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <h3 style="margin-top:24px;">4. Analytics & Developer Tooling：見える化・開発支援系</h3>
+        <div class="cards-ideas">
+          <div class="idea">
+            <span class="label green">Idea 9</span>
+            <h3>Predict Surface Studio</h3>
+            <p>
+              strike、expiry、implied volatility の関係を3Dで可視化し、時間を戻して過去の変化も確認できる分析ツールです。
+              価格の歪みや、異常な形のボラティリティ・サーフェスを検知する機能も考えられます。
+            </p>
+            <div class="meta"><span class="tag diff-high">難易度：高</span><span class="tag">Analytics</span><span class="tag">可視化</span><span class="tag">プロ向け</span></div>
+            <div class="explain">
+              <span class="label green">初心者向けに言うと</span>
+              <p>
+                Predictの価格のクセや歪みを、立体地図のように見える化するツールです。
+                プロトレーダーや開発者が「この市場価格はおかしくないか？」を確認するために使います。
+              </p>
+            </div>
+          </div>
+
+          <div class="idea">
+            <span class="label green">Idea 10</span>
+            <h3>PLP Risk Dashboard</h3>
+            <p>
+              PLPの利用率、出金制限、オラクルごとのエクスポージャー、BTCが大きく動いた場合の損益シミュレーションなどを表示するダッシュボードです。
+              公式文では「PLPは安全なのか？」という疑問に答えるものとして位置づけられています。
+            </p>
+            <div class="meta"><span class="tag diff-mid">難易度：中〜高</span><span class="tag">Risk</span><span class="tag">Dashboard</span><span class="tag">LP向け</span></div>
+            <div class="explain">
+              <span class="label green">初心者向けに言うと</span>
+              <p>
+                PLPに資金を入れる人が、「どれくらい危ないのか」「どんな価格変動で損しやすいのか」を一目で確認する画面です。
+                大口LPや真面目な運用者に刺さりやすい方向です。
+              </p>
+            </div>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid">
+      <article class="card span-12">
+        <h2>アイデア選定の見方</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>方向性</th>
+                <th>強み</th>
+                <th>弱み</th>
+                <th>向いているチーム</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Vault / structured product</td>
+                <td>金融プロダクトとして強い。DeFi感が出る。</td>
+                <td>金融設計・シミュレーションが重い。</td>
+                <td>金融・Bot・バックエンドに強いチーム。</td>
+              </tr>
+              <tr>
+                <td>Consumer frontend</td>
+                <td>デモ映えしやすく、初心者にも伝わる。</td>
+                <td>DeepBook Predict独自性が薄くなる危険がある。</td>
+                <td>UI/UX・SNS・ゲーム設計が得意なチーム。</td>
+              </tr>
+              <tr>
+                <td>Keeper / Bot</td>
+                <td>実用性が高く、動けば評価されやすい。</td>
+                <td>地味に見える可能性がある。</td>
+                <td>自動化・API・監視処理が得意なチーム。</td>
+              </tr>
+              <tr>
+                <td>Analytics</td>
+                <td>DeepBook Predictの理解を助ける。プロ向けに刺さる。</td>
+                <td>派手なユーザー体験にはなりにくい。</td>
+                <td>データ可視化・金融分析が得意なチーム。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <section id="glossary" class="grid">
+      <article class="card span-12">
+        <h2>用語集：金融・クリプト初心者向け</h2>
+        <div class="glossary">
+          <div class="glossary-item"><b>Prediction Market / 予測市場</b>未来の出来事に対して「起きる・起きない」などを売買する市場。</div>
+          <div class="glossary-item"><b>CLOB</b>Central Limit Order Book。買い注文・売り注文を板に並べてマッチングする方式。</div>
+          <div class="glossary-item"><b>Binary Outcome</b>結果が2択の市場。例：「BTCが上がる / 上がらない」。</div>
+          <div class="glossary-item"><b>Strike</b>基準価格。例：「BTCが70,000ドルを超えるか」の70,000ドル。</div>
+          <div class="glossary-item"><b>Expiry</b>期限。いつ判定するか。例：15分後、1時間後、週末など。</div>
+          <div class="glossary-item"><b>Volatility / ボラティリティ</b>価格の動きの大きさ。大きいほど値動きが荒い。</div>
+          <div class="glossary-item"><b>Volatility Surface</b>価格帯と期限ごとのボラティリティを立体的に表したもの。</div>
+          <div class="glossary-item"><b>Vault</b>複数ユーザーの資金をまとめ、決められた戦略で自動運用する箱。</div>
+          <div class="glossary-item"><b>LP</b>Liquidity Provider。市場に流動性を提供する人や資金。</div>
+          <div class="glossary-item"><b>PLP</b>Predict Liquidity Provider系の文脈で使われる流動性提供ポジション。市場の相手方になる資金側。</div>
+          <div class="glossary-item"><b>Oracle</b>オンチェーンが外部価格を参照するための仕組み。例：BTC価格をSui上に伝える。</div>
+          <div class="glossary-item"><b>dUSDC</b>DeepBook Predictのtestnetで使う専用のUSDC風トークン。公式USDCではない。</div>
+          <div class="glossary-item"><b>Mainnet / Testnet</b>Mainnetは本番環境。Testnetは開発・検証用の環境。</div>
+          <div class="glossary-item"><b>Margin</b>担保を入れて、より大きな取引や借入を行う仕組み。</div>
+          <div class="glossary-item"><b>Lending</b>資産を貸す・借りるDeFi機能。</div>
+          <div class="glossary-item"><b>Structured Product</b>複数の金融取引を組み合わせて、特定のリスク・リターンを作る商品。</div>
+          <div class="glossary-item"><b>Keeper</b>人間の代わりに定期実行や決済処理を行うBot。</div>
+          <div class="glossary-item"><b>PTB</b>Programmable Transaction Block。Suiで複数の処理を1つのトランザクションにまとめる仕組み。</div>
+          <div class="glossary-item"><b>SVI</b>ボラティリティの形を表すためのモデル。Predictでは価格計算や表面の表現に関係する。</div>
+          <div class="glossary-item"><b>PnL / APY</b>PnLは損益。APYは年率換算の利回り。</div>
+          <div class="glossary-item"><b>LTV</b>Loan To Value。担保に対してどれだけ借りているかの比率。</div>
+          <div class="glossary-item"><b>ITM / OTM</b>ITMは勝っている状態に近いポジション、OTMは勝つには価格が大きく動く必要があるポジション。</div>
+          <div class="glossary-item"><b>Delta Hedge</b>価格変動による損益を別ポジションで打ち消し、特定のリスクだけを取りに行く手法。</div>
+          <div class="glossary-item"><b>MEV</b>トランザクションの順序や実行タイミングから生まれる追加利益、またはそのリスク。</div>
+        </div>
+      </article>
+    </section>
+
+    <section id="refs" class="grid">
+      <article class="card span-12">
+        <h2>参考リンク</h2>
+        <ul>
+          <li><a href="https://github.com/MystenLabs/deepbookv3/tree/predict-testnet-4-16/packages/predict" target="_blank" rel="noopener">DeepBook Predict codebase</a>：branch は <code>predict-testnet-4-16</code> を使う。</li>
+          <li><a href="https://github.com/MystenLabs/deepbook-sandbox" target="_blank" rel="noopener">DeepBook sandbox</a></li>
+          <li><a href="https://docs.sui.io/onchain-finance/deepbook-predict/" target="_blank" rel="noopener">DeepBook Predict doc</a></li>
+          <li><a href="https://docs.sui.io/onchain-finance/deepbookv3/deepbook" target="_blank" rel="noopener">DeepBook v3 doc</a></li>
+          <li><a href="https://docs.sui.io/onchain-finance/deepbook-margin" target="_blank" rel="noopener">DeepBook Margin doc</a></li>
+          <li><a href="https://go.sui.io/ofw-deepbook-tg" target="_blank" rel="noopener">DeepBook Builder Group</a></li>
+        </ul>
+      </article>
+    </section>
+
+    <p class="footer">
+      このHTMLは、DeepBook Predict Problem Statement の内容を、金融・クリプト初心者にも伝わるように整理したチーム共有用資料です。
+    </p>
+  </main>
+</body>
+</html>
