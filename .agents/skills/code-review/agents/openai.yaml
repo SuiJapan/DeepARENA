@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Review"
+  short_description: "Review local changes or a PR with Codex /review"
+  default_prompt: "Use $code-review to review these changes with the Codex standard /review command. Include findings, file and line references when available, and validation results."

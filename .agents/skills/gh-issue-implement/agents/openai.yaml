@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Issue Implement"
+  short_description: "Implement an issue with plan review and clean-context /review"
+  default_prompt: "Use $gh-issue-implement to implement this GitHub issue end to end with Codex. Have Codex review the plan first, then have a clean-context subagent run the default Codex CLI /review command as a PR-style comparison between the implementation branch and main until there are no findings."
