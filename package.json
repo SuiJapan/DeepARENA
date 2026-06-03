@@ -1,0 +1,18 @@
+{
+  "name": "deeparena",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.27.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm --filter dapp dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "format": "pnpm -r format",
+    "test": "pnpm -r test",
+    "dapp": "pnpm --filter dapp",
+    "contract": "pnpm --filter contract"
+  }
+}

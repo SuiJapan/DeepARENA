@@ -6,7 +6,11 @@ settings:
 
 importers:
 
-  .:
+  .: {}
+
+  contract: {}
+
+  dapp:
     dependencies:
       next:
         specifier: 16.2.7

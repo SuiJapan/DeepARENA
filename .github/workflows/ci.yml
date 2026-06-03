@@ -1,0 +1,193 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "contract/**"
+      - "dapp/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/ci.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "contract/**"
+      - "dapp/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/ci.yml"
+
+env:
+  SUI_CLI_VERSION: testnet-v1.71.1
+  SUI_CLI_URL: https://github.com/MystenLabs/sui/releases/download/testnet-v1.71.1/sui-testnet-v1.71.1-ubuntu-x86_64.tgz
+  SUI_CLI_SHA256: ca6bc791596d5def88500b653b5db718e72dd0d2b58039ad118f74ef9e6761a5
+
+jobs:
+  detect-changes:
+    name: Detect changed files
+    runs-on: ubuntu-latest
+    outputs:
+      any_changed: ${{ steps.changed-files.outputs.any_changed }}
+      dapp_changed: ${{ steps.changed-files.outputs.dapp_changed }}
+      contract_changed: ${{ steps.changed-files.outputs.contract_changed }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed files
+        id: changed-files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+            base_ref="origin/${{ github.base_ref }}"
+          else
+            base_ref="${{ github.event.before }}"
+            if [[ -z "$base_ref" || "$base_ref" =~ ^0+$ ]]; then
+              echo "any_changed=true" >> "$GITHUB_OUTPUT"
+              echo "contract_changed=true" >> "$GITHUB_OUTPUT"
+              echo "dapp_changed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          changed_files="$(mktemp)"
+          git diff --name-only "$base_ref" "${{ github.sha }}" > "$changed_files"
+
+          dapp_changed=false
+          contract_changed=false
+
+          while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            if [[ "$file" == contract/* || "$file" == "contract/package.json" || "$file" == "contract/Move.toml" || "$file" == "contract/Move.lock" ]]; then
+              contract_changed=true
+            fi
+            if [[ "$file" == dapp/* || "$file" == "dapp/package.json" || "$file" == "dapp/next.config.ts" || "$file" == "package.json" || "$file" == "pnpm-lock.yaml" || "$file" == "pnpm-workspace.yaml" ]]; then
+              dapp_changed=true
+            fi
+          done < "$changed_files"
+
+          if [[ "$contract_changed" == "true" || "$dapp_changed" == "true" ]]; then
+            any_changed=true
+          else
+            any_changed=false
+          fi
+
+          echo "any_changed=$any_changed" >> "$GITHUB_OUTPUT"
+          echo "dapp_changed=$dapp_changed" >> "$GITHUB_OUTPUT"
+          echo "contract_changed=$contract_changed" >> "$GITHUB_OUTPUT"
+
+  ci:
+    name: Check dapp and contract
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.any_changed == 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20.x
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.27.0 --activate
+
+      - name: Cache pnpm store
+        id: pnpm-store
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.STORE_PATH }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint Next.js app
+        run: pnpm --filter dapp lint
+        if: needs.detect-changes.outputs.dapp_changed == 'true'
+
+      - name: Cache Sui CLI
+        id: sui-cache
+        uses: actions/cache@v5
+        if: needs.detect-changes.outputs.contract_changed == 'true'
+        with:
+          path: |
+            ~/.cache/deeparena/sui/${{ env.SUI_CLI_SHA256 }}
+            ~/.cache/deeparena/sui/${{ env.SUI_CLI_SHA256 }}/sui
+          key: sui-cli-${{ runner.os }}-${{ env.SUI_CLI_SHA256 }}
+
+      - name: Install pinned Sui CLI
+        shell: bash
+        if: needs.detect-changes.outputs.contract_changed == 'true'
+        run: |
+          set -euo pipefail
+
+          cache_dir="$HOME/.cache/deeparena/sui/$SUI_CLI_SHA256"
+          download_path="$cache_dir/download.tgz"
+          cached_binary="$cache_dir/sui"
+          extract_dir="$RUNNER_TEMP/sui-extract"
+
+          mkdir -p "$cache_dir" "$extract_dir"
+
+          if [[ -x "$cached_binary" ]]; then
+            echo "Using cached sui binary at $cached_binary"
+          else
+            if [[ ! -f "$download_path" ]]; then
+              curl -fsSL "$SUI_CLI_URL" -o "$download_path"
+              printf '%s  %s\n' "$SUI_CLI_SHA256" "$download_path" | sha256sum -c -
+            fi
+
+            tar -xzf "$download_path" -C "$extract_dir"
+            source_path="$(find "$extract_dir" -type f -name sui | head -n 1)"
+            if [[ -z "$source_path" || ! -f "$source_path" ]]; then
+              echo "Unable to find downloaded sui binary" >&2
+              exit 1
+            fi
+
+            cp "$source_path" "$cached_binary"
+            chmod +x "$cached_binary"
+          fi
+
+          install_dir="$RUNNER_TEMP/sui-bin"
+          mkdir -p "$install_dir"
+          cp "$cached_binary" "$install_dir/sui"
+          chmod +x "$install_dir/sui"
+          echo "$install_dir" >> "$GITHUB_PATH"
+          "$install_dir/sui" --version
+
+      - name: Lint Sui contract
+        run: pnpm --filter contract lint
+        if: needs.detect-changes.outputs.contract_changed == 'true'
+
+      - name: Build Sui contracts
+        run: pnpm --filter contract build
+        if: needs.detect-changes.outputs.contract_changed == 'true'
+
+      - name: Test Sui contracts
+        run: pnpm --filter contract test
+        if: needs.detect-changes.outputs.contract_changed == 'true'
+
+      - name: Build Next.js app
+        run: pnpm --filter dapp build
+        if: needs.detect-changes.outputs.dapp_changed == 'true'

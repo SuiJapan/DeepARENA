@@ -1,0 +1,10 @@
+{
+  "name": "contract",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "sui move build",
+    "lint": "sui move build --lint",
+    "test": "sui move test"
+  }
+}
