@@ -1,3 +1,4 @@
+import { formatMarketPrice, marketConfig } from "../market/config";
 import type { DeepArenaClient } from "./client";
 import { deepArenaMockConfig } from "./config";
 import { normalizeActionPreview, normalizeEventLog, normalizeQuantity } from "./normalize";
@@ -28,19 +29,19 @@ const mockExpiryMs = 1790812800000;
 
 const binaryMarkets: BinaryMarket[] = [
     {
-        id: "binary-sui-4-up",
-        label: "SUI above 4.00",
-        underlying: "SUI / DUSDC",
-        key: { oracleId: "0xoracle-sui", expiryMs: mockExpiryMs, strike: "4.00", isUp: true },
+        id: "binary-btc-60000-up",
+        label: `BTC above ${formatMarketPrice(60_000)}`,
+        underlying: marketConfig.displaySymbol,
+        key: { oracleId: "0xoracle-btc", expiryMs: mockExpiryMs, strike: "60000.00", isUp: true },
         oracleStatus: "active",
         markPrice: "0.61",
         openInterest: quote("82400000000"),
     },
     {
-        id: "binary-sui-5-up",
-        label: "SUI above 5.00",
-        underlying: "SUI / DUSDC",
-        key: { oracleId: "0xoracle-sui", expiryMs: mockExpiryMs, strike: "5.00", isUp: true },
+        id: "binary-btc-65000-up",
+        label: `BTC above ${formatMarketPrice(65_000)}`,
+        underlying: marketConfig.displaySymbol,
+        key: { oracleId: "0xoracle-btc", expiryMs: mockExpiryMs, strike: "65000.00", isUp: true },
         oracleStatus: "active",
         markPrice: "0.43",
         openInterest: quote("51750000000"),
@@ -49,28 +50,28 @@ const binaryMarkets: BinaryMarket[] = [
 
 const rangeMarkets: RangeMarket[] = [
     {
-        id: "range-sui-3-4",
-        label: "SUI 3.00 - 4.00",
-        underlying: "SUI / DUSDC",
+        id: "range-btc-59000-61000",
+        label: `BTC ${formatMarketPrice(59_000)} - ${formatMarketPrice(61_000)}`,
+        underlying: marketConfig.displaySymbol,
         key: {
-            oracleId: "0xoracle-sui",
+            oracleId: "0xoracle-btc",
             expiryMs: mockExpiryMs,
-            lowerStrike: "3.00",
-            higherStrike: "4.00",
+            lowerStrike: "59000.00",
+            higherStrike: "61000.00",
         },
         oracleStatus: "active",
         markPrice: "0.37",
         openInterest: quote("46300000000"),
     },
     {
-        id: "range-sui-4-6",
-        label: "SUI 4.00 - 6.00",
-        underlying: "SUI / DUSDC",
+        id: "range-btc-58000-62000",
+        label: `BTC ${formatMarketPrice(58_000)} - ${formatMarketPrice(62_000)}`,
+        underlying: marketConfig.displaySymbol,
         key: {
-            oracleId: "0xoracle-sui",
+            oracleId: "0xoracle-btc",
             expiryMs: mockExpiryMs,
-            lowerStrike: "4.00",
-            higherStrike: "6.00",
+            lowerStrike: "58000.00",
+            higherStrike: "62000.00",
         },
         oracleStatus: "active",
         markPrice: "0.54",
@@ -135,7 +136,9 @@ const initialEvents: EventLog[] = [
         id: "event-2",
         kind: "range-opened",
         title: "Range position opened",
-        detail: "Range Runner opened SUI 3.00 - 4.00.",
+        detail: `Range Runner opened BTC ${formatMarketPrice(59_000)} - ${formatMarketPrice(
+            61_000,
+        )}.`,
         actor: "0xa90b...6ff2",
         timestampMs: 1769986800000,
         isMock: true,

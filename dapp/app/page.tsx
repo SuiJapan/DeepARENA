@@ -1,35 +1,32 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useDeepArena } from "@/src/features/deep-arena/use-deep-arena";
+import { MarketChart } from "@/src/features/market/market-chart";
+import { useMarketStream } from "@/src/features/market/use-market-stream";
 import { deepArenaMockConfig } from "@/src/lib/deep-arena/config";
 import type { EventLog, PlayerSummary, TokenAmount } from "@/src/lib/deep-arena/types";
+import { calculateMarketRange, formatMarketPrice, marketConfig } from "@/src/lib/market/config";
 
 type View = "arena" | "portfolio" | "ranking";
 type BinaryDirection = "UP" | "DOWN";
 type RangeDirection = "RANGE" | "BREAK";
 
 const liveRound = {
-    roundId: "SUI-ROUND-001",
-    symbol: "SUI / DUSDC",
+    roundId: "BTC-ROUND-001",
     status: "LIVE ROUND",
-    strikePrice: "4.0000",
     durationSeconds: 300,
     remainingSeconds: 224,
 };
 
 const nextRound = {
-    roundId: "SUI-ROUND-002",
-    symbol: "SUI / DUSDC",
+    roundId: "BTC-ROUND-002",
     odds: "2x",
     defaultAmount: 100,
 };
 
 const nextRangeRound = {
-    roundId: "SUI-RANGE-ROUND-002",
-    symbol: "SUI / DUSDC",
-    lowerPrice: "3.9500",
-    upperPrice: "4.0500",
+    roundId: "BTC-RANGE-ROUND-002",
     odds: "2x",
     defaultAmount: 100,
 };
@@ -76,10 +73,14 @@ function LiveRoundPanel({
     remainingSeconds,
     prize,
     deadline,
+    currentPrice,
+    strikePrice,
 }: {
     remainingSeconds: number;
     prize: TokenAmount;
     deadline: Date;
+    currentPrice: number | null;
+    strikePrice: number | null;
 }) {
     return (
         <section className="arena-band live-round-panel">
@@ -92,7 +93,13 @@ function LiveRoundPanel({
                 <div className="live-round-content">
                     <div>
                         <span>Market</span>
-                        <h1>{liveRound.symbol}</h1>
+                        <h1>{marketConfig.displaySymbol}</h1>
+                    </div>
+                    <div className="strike-price">
+                        <span>Current price</span>
+                        <strong>
+                            {currentPrice !== null ? formatMarketPrice(currentPrice) : "--"}
+                        </strong>
                     </div>
                     <div className="round-countdown">
                         <span>Time remaining</span>
@@ -100,7 +107,9 @@ function LiveRoundPanel({
                     </div>
                     <div className="strike-price">
                         <span>Strike price</span>
-                        <strong>{liveRound.strikePrice}</strong>
+                        <strong>
+                            {strikePrice !== null ? formatMarketPrice(strikePrice) : "--"}
+                        </strong>
                     </div>
                 </div>
                 <RoundProgressBar
@@ -158,7 +167,7 @@ function NextBinaryRoundCard() {
             <div className="card-title">
                 <div>
                     <span>Binary · Next round</span>
-                    <h2>{nextRound.symbol}</h2>
+                    <h2>{marketConfig.displaySymbol}</h2>
                 </div>
             </div>
             <fieldset className="direction-picker">
@@ -215,12 +224,16 @@ function NextBinaryRoundCard() {
     );
 }
 
-function NextRangeRoundCard() {
+function NextRangeRoundCard({ strikePrice }: { strikePrice: number | null }) {
     const [direction, setDirection] = useState<RangeDirection>("RANGE");
     const [amount, setAmount] = useState(String(nextRangeRound.defaultAmount));
     const [entryMessage, setEntryMessage] = useState<string | null>(null);
     const amountNumber = Number(amount);
     const canEnter = Number.isFinite(amountNumber) && amountNumber > 0;
+    const rangeBounds = useMemo(
+        () => (strikePrice !== null ? calculateMarketRange(strikePrice) : null),
+        [strikePrice],
+    );
 
     function enterNextRound() {
         if (!canEnter) {
@@ -241,8 +254,12 @@ function NextRangeRoundCard() {
                 <div>
                     <span>Vertical Range · Next round</span>
                     <h2>
-                        {nextRangeRound.symbol} {nextRangeRound.lowerPrice} -{" "}
-                        {nextRangeRound.upperPrice}
+                        {marketConfig.displaySymbol}{" "}
+                        {rangeBounds
+                            ? `${formatMarketPrice(rangeBounds.lower)} - ${formatMarketPrice(
+                                  rangeBounds.upper,
+                              )}`
+                            : "--"}
                     </h2>
                 </div>
             </div>
@@ -384,56 +401,6 @@ function Leaderboard({
     );
 }
 
-function MarketChart() {
-    return (
-        <section className="surface market-chart">
-            <div className="section-title">
-                <div>
-                    <span>Market view</span>
-                    <h2>SUI / DUSDC</h2>
-                </div>
-                <div className="market-quote">
-                    <strong>3.42 DUSDC</strong>
-                    <small>+4.18%</small>
-                </div>
-            </div>
-            <div className="timeframe-row">
-                <button type="button">1H</button>
-                <button type="button" data-active="true">
-                    1D
-                </button>
-                <button type="button">1W</button>
-                <button type="button">1M</button>
-            </div>
-            <div className="chart-area">
-                <svg viewBox="0 0 800 260" role="img" aria-label="Illustrative SUI price chart">
-                    <defs>
-                        <linearGradient id="chartFill" x1="0" x2="0" y1="0" y2="1">
-                            <stop offset="0%" stopColor="#31a98b" stopOpacity="0.28" />
-                            <stop offset="100%" stopColor="#31a98b" stopOpacity="0" />
-                        </linearGradient>
-                    </defs>
-                    <path
-                        className="chart-fill"
-                        d="M0 224 L38 214 L76 219 L114 180 L152 191 L190 145 L228 160 L266 117 L304 128 L342 85 L380 104 L418 76 L456 118 L494 110 L532 149 L570 140 L608 167 L646 137 L684 151 L722 111 L760 124 L800 78 L800 260 L0 260 Z"
-                    />
-                    <path
-                        className="chart-line"
-                        d="M0 224 L38 214 L76 219 L114 180 L152 191 L190 145 L228 160 L266 117 L304 128 L342 85 L380 104 L418 76 L456 118 L494 110 L532 149 L570 140 L608 167 L646 137 L684 151 L722 111 L760 124 L800 78"
-                    />
-                </svg>
-                <div className="chart-axis">
-                    <span>00:00</span>
-                    <span>06:00</span>
-                    <span>12:00</span>
-                    <span>18:00</span>
-                    <span>Now</span>
-                </div>
-            </div>
-        </section>
-    );
-}
-
 function HistoryTable({ events, title }: { events: EventLog[]; title: string }) {
     return (
         <section className="surface history">
@@ -470,7 +437,10 @@ function HistoryTable({ events, title }: { events: EventLog[]; title: string }) 
 export default function Home() {
     const [view, setView] = useState<View>("arena");
     const { snapshot, preview, error, isLoading } = useDeepArena();
+    const market = useMarketStream();
     const [remainingSeconds, setRemainingSeconds] = useState(liveRound.remainingSeconds);
+    const [strikePrice, setStrikePrice] = useState<number | null>(null);
+    const currentPriceRef = useRef<number | null>(null);
 
     const currentPlayer = useMemo(
         () => snapshot?.players.find(({ isCurrentPlayer }) => isCurrentPlayer),
@@ -478,10 +448,19 @@ export default function Home() {
     );
 
     useEffect(() => {
+        currentPriceRef.current = market.reference.currentPrice;
+        setStrikePrice((current) => current ?? market.reference.currentPrice);
+    }, [market.reference.currentPrice]);
+
+    useEffect(() => {
         const intervalId = window.setInterval(() => {
-            setRemainingSeconds((current) =>
-                current <= 1 ? liveRound.durationSeconds : current - 1,
-            );
+            setRemainingSeconds((current) => {
+                if (current <= 1) {
+                    setStrikePrice(currentPriceRef.current);
+                    return liveRound.durationSeconds;
+                }
+                return current - 1;
+            });
         }, 1000);
 
         return () => window.clearInterval(intervalId);
@@ -532,12 +511,14 @@ export default function Home() {
                         remainingSeconds={remainingSeconds}
                         prize={arena.prizePool}
                         deadline={endsAt}
+                        currentPrice={market.reference.currentPrice}
+                        strikePrice={strikePrice}
                     />
 
                     <section className="arena-content">
                         <div className="trade-card-row">
                             <NextBinaryRoundCard />
-                            <NextRangeRoundCard />
+                            <NextRangeRoundCard strikePrice={strikePrice} />
                             <PlpCard
                                 price={plp.priceInQuote}
                                 change={plp.dayChangePercent}
@@ -547,7 +528,7 @@ export default function Home() {
                             />
                         </div>
                         <div className="market-ranking-row">
-                            <MarketChart />
+                            <MarketChart market={market} />
                             <Leaderboard players={players} />
                         </div>
                     </section>

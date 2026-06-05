@@ -206,7 +206,7 @@ button:disabled {
 
 .live-round-content {
     display: grid;
-    grid-template-columns: minmax(150px, 1fr) auto auto;
+    grid-template-columns: minmax(150px, 1fr) auto auto auto;
     gap: 28px;
     align-items: end;
     margin-top: 14px;
@@ -650,6 +650,15 @@ button:disabled {
     font-size: 17px;
 }
 
+.section-title small {
+    display: block;
+    margin-top: 4px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 8px;
+    text-transform: uppercase;
+}
+
 .section-title > strong {
     color: var(--muted);
     font-family: var(--font-mono);
@@ -676,6 +685,14 @@ button:disabled {
     font-size: 10px;
 }
 
+.market-quote[data-direction="down"] small {
+    color: var(--coral);
+}
+
+.market-quote[data-direction="flat"] small {
+    color: var(--muted);
+}
+
 .timeframe-row {
     display: flex;
     gap: 5px;
@@ -696,6 +713,44 @@ button:disabled {
     color: white;
     background: var(--ink);
     border-color: var(--ink);
+}
+
+.market-stream-meta {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 18px 0;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 8px;
+    text-transform: uppercase;
+}
+
+.market-stream-meta span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.market-status {
+    flex: 0 0 auto;
+    padding: 4px 6px;
+    color: var(--muted);
+    background: #f4f7f5;
+    border: 1px solid var(--line);
+}
+
+.market-status[data-status="LIVE"] {
+    color: var(--green);
+    background: var(--green-soft);
+    border-color: #a8d8c7;
+}
+
+.market-status[data-status="STALE"],
+.market-status[data-status="ERROR"] {
+    color: var(--coral);
+    background: var(--coral-soft);
+    border-color: #f0aa99;
 }
 
 .chart-area {
@@ -725,6 +780,27 @@ button:disabled {
 
 .chart-fill {
     fill: url("#chartFill");
+}
+
+.chart-last-point {
+    fill: white;
+    stroke: var(--green);
+    stroke-width: 4;
+    vector-effect: non-scaling-stroke;
+}
+
+.chart-empty {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    padding: 18px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    text-align: center;
+    text-transform: uppercase;
 }
 
 .chart-axis {
