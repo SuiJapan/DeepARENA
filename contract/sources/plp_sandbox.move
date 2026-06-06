@@ -6,8 +6,6 @@ use deepbook_predict::predict::Predict;
 use sui::clock::Clock;
 use sui::coin::Coin;
 use sui::event;
-use sui::object::{Self, ID};
-use sui::transfer;
 
 const EZeroAmount: u64 = 0;
 
@@ -30,7 +28,7 @@ public fun provide_liquidity<Quote>(
     coin: Coin<Quote>,
     clock: &Clock,
     ctx: &mut TxContext,
-) {
+): Coin<PLP> {
     let quote_amount = coin.value();
     assert!(quote_amount > 0, EZeroAmount);
 
@@ -39,13 +37,14 @@ public fun provide_liquidity<Quote>(
     let provider = ctx.sender();
     let predict_id = object::id(predict);
 
-    transfer::public_transfer(plp_coin, provider);
     event::emit(SandboxLiquidityProvided {
         provider,
         predict_id,
         quote_amount,
         plp_amount,
     });
+
+    plp_coin
 }
 
 public fun withdraw_liquidity<Quote>(
@@ -53,7 +52,7 @@ public fun withdraw_liquidity<Quote>(
     lp_coin: Coin<PLP>,
     clock: &Clock,
     ctx: &mut TxContext,
-) {
+): Coin<Quote> {
     let plp_amount = lp_coin.value();
     assert!(plp_amount > 0, EZeroAmount);
 
@@ -62,11 +61,12 @@ public fun withdraw_liquidity<Quote>(
     let provider = ctx.sender();
     let predict_id = object::id(predict);
 
-    transfer::public_transfer(quote_coin, provider);
     event::emit(SandboxLiquidityWithdrawn {
         provider,
         predict_id,
         plp_amount,
         quote_amount,
     });
+
+    quote_coin
 }

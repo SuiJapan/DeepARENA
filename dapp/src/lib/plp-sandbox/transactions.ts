@@ -20,7 +20,7 @@ export function createPlpSandboxTransaction({
             ? coinWithBalance({ balance: amount, type: PLP_SANDBOX_CONFIG.dusdcCoinType })
             : coinWithBalance({ balance: amount, type: PLP_SANDBOX_CONFIG.plpCoinType });
 
-    tx.moveCall({
+    const returnedCoin = tx.moveCall({
         target:
             action === "supply"
                 ? `${PLP_SANDBOX_CONFIG.sandboxPackageId}::plp_sandbox::provide_liquidity`
@@ -32,6 +32,7 @@ export function createPlpSandboxTransaction({
             tx.object(PLP_SANDBOX_CONFIG.clockObjectId),
         ],
     });
+    tx.transferObjects([returnedCoin], sender);
 
     return tx;
 }
