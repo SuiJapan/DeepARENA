@@ -4,9 +4,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useDeepArena } from "@/src/features/deep-arena/use-deep-arena";
 import { MarketChart } from "@/src/features/market/market-chart";
 import { useMarketStream } from "@/src/features/market/use-market-stream";
+import { PlpSandboxPanel } from "@/src/features/plp-sandbox/plp-sandbox-panel";
 import { deepArenaMockConfig } from "@/src/lib/deep-arena/config";
 import type { EventLog, PlayerSummary, TokenAmount } from "@/src/lib/deep-arena/types";
 import { calculateMarketRange, formatMarketPrice, marketConfig } from "@/src/lib/market/config";
+import { WalletStatus } from "./wallet-status";
 
 type View = "arena" | "portfolio" | "ranking";
 type BinaryDirection = "UP" | "DOWN";
@@ -317,54 +319,6 @@ function NextRangeRoundCard({ strikePrice }: { strikePrice: number | null }) {
     );
 }
 
-function PlpCard({
-    price,
-    change,
-    supply,
-    liquidity,
-    utilization,
-}: {
-    price: string;
-    change: string;
-    supply: string;
-    liquidity: TokenAmount;
-    utilization: string;
-}) {
-    return (
-        <section className="trade-card plp-card">
-            <div className="card-title">
-                <div>
-                    <span>Liquidity provider</span>
-                    <h2>Predict PLP</h2>
-                </div>
-                <strong>{price}</strong>
-            </div>
-            <div className="plp-highlight">
-                <span>PLP price</span>
-                <strong>{price} DUSDC</strong>
-                <small>+{change}% today</small>
-            </div>
-            <dl className="plp-facts">
-                <div>
-                    <dt>Available liquidity</dt>
-                    <dd>{formatAmount(liquidity, 0)}</dd>
-                </div>
-                <div>
-                    <dt>Utilization</dt>
-                    <dd>{utilization}%</dd>
-                </div>
-                <div>
-                    <dt>Total supply</dt>
-                    <dd>{Number(supply).toLocaleString("en-US")}</dd>
-                </div>
-            </dl>
-            <button type="button" className="disabled-action" disabled>
-                Liquidity actions unavailable
-            </button>
-        </section>
-    );
-}
-
 function Leaderboard({
     players,
     currentScore,
@@ -434,7 +388,7 @@ function HistoryTable({ events, title }: { events: EventLog[]; title: string }) 
     );
 }
 
-export default function Home() {
+function HomeContent() {
     const [view, setView] = useState<View>("arena");
     const { snapshot, preview, error, isLoading } = useDeepArena();
     const market = useMarketStream();
@@ -470,7 +424,7 @@ export default function Home() {
         return <main className="status-screen">Loading Deep Arena mock...</main>;
     }
 
-    const { arena, players, vault, plp, events } = snapshot;
+    const { arena, players, events } = snapshot;
     const ownEvents = events.filter(({ actor }) => actor === currentPlayer?.address);
     const endsAt = new Date(arena.endMs);
 
@@ -493,14 +447,12 @@ export default function Home() {
                         </button>
                     ))}
                 </nav>
-                <button
-                    className="wallet-button"
-                    type="button"
-                    title={`Wallet connection is unavailable in ${deepArenaMockConfig.network} mode`}
-                    disabled
+                <div
+                    className="wallet-button-wrap"
+                    title={`Predict UI mode: ${deepArenaMockConfig.network}`}
                 >
-                    Connect wallet
-                </button>
+                    <WalletStatus />
+                </div>
             </header>
 
             {error ? <div className="error-banner">{error}</div> : null}
@@ -519,13 +471,7 @@ export default function Home() {
                         <div className="trade-card-row">
                             <NextBinaryRoundCard />
                             <NextRangeRoundCard strikePrice={strikePrice} />
-                            <PlpCard
-                                price={plp.priceInQuote}
-                                change={plp.dayChangePercent}
-                                supply={plp.totalSupply}
-                                liquidity={vault.availableLiquidity}
-                                utilization={vault.utilizationPercent}
-                            />
+                            <PlpSandboxPanel />
                         </div>
                         <div className="market-ranking-row">
                             <MarketChart market={market} />
@@ -617,4 +563,8 @@ export default function Home() {
             ) : null}
         </main>
     );
+}
+
+export default function Home() {
+    return <HomeContent />;
 }

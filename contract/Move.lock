@@ -5,19 +5,37 @@
 version = 4
 
 [pinned.testnet.MoveStdlib]
-source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/move-stdlib", rev = "73dd2c2ba6f9fdb21d7ffde2b50a3f2f0ac39bc1" }
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/move-stdlib", rev = "718ae563a42fb4ba0d055588f81c704dcef58c25" }
 use_environment = "testnet"
 manifest_digest = "C4FE4C91DE74CBF223B2E380AE40F592177D21870DC2D7EB6227D2D694E05363"
 deps = {}
 
 [pinned.testnet.Sui]
-source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "73dd2c2ba6f9fdb21d7ffde2b50a3f2f0ac39bc1" }
+source = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "718ae563a42fb4ba0d055588f81c704dcef58c25" }
 use_environment = "testnet"
 manifest_digest = "7AFB66695545775FBFBB2D3078ADFD084244D5002392E837FDE21D9EA1C6D01C"
 deps = { MoveStdlib = "MoveStdlib" }
 
-[pinned.testnet.contract]
+[pinned.testnet.deep_arena]
 source = { root = true }
+use_environment = "testnet"
+manifest_digest = "D5C4EDD9100CFA73813297A16770602109B4E6364F04D120BA661B39D11C4287"
+deps = { Sui = "Sui", deepbook_predict = "deepbook_predict" }
+
+[pinned.testnet.deepbook]
+source = { local = "vendor/deepbook" }
+use_environment = "testnet"
+manifest_digest = "A3FF55EFA3DD914539164CDD1ED5996978D218BCB61543F5692ABB564B1FB56A"
+deps = { std = "MoveStdlib", sui = "Sui", token = "token" }
+
+[pinned.testnet.deepbook_predict]
+source = { local = "vendor/deepbook_predict" }
+use_environment = "testnet"
+manifest_digest = "A81C4B20DFD70F7717C352CAEDCFF55ECC2D8ADF14590ACD328B67C26E88C321"
+deps = { deepbook = "deepbook", std = "MoveStdlib", sui = "Sui" }
+
+[pinned.testnet.token]
+source = { git = "https://github.com/MystenLabs/deepbookv3.git", subdir = "packages/token", rev = "e276939f0613b98d8dcfa818ada3612dbbeb386b" }
 use_environment = "testnet"
 manifest_digest = "5745706258F61D6CE210904B3E6AE87A73CE9D31A6F93BE4718C442529332A87"
 deps = { std = "MoveStdlib", sui = "Sui" }
