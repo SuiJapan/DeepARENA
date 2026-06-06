@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { plpSandboxSuiScanPlpUrl } from "@/src/lib/plp-sandbox/config";
 import { usePlpSandbox } from "./use-plp-sandbox";
 
 type PlpSandboxMode = "supply" | "withdraw";
@@ -31,7 +32,7 @@ export function PlpSandboxPanel() {
         if (plp.isRefreshing) {
             return "Refreshing balances...";
         }
-        return "Supply DUSDC or withdraw PLP on Sui Testnet.";
+        return "";
     })();
 
     return (
@@ -119,7 +120,15 @@ export function PlpSandboxPanel() {
                         View in Sui Explorer
                     </a>
                 ) : null}
-                {!plp.result && !plp.balanceError ? <p>{statusMessage}</p> : null}
+                {!plp.result && !plp.balanceError ? (
+                    statusMessage ? (
+                        <p>{statusMessage}</p>
+                    ) : (
+                        <a href={plpSandboxSuiScanPlpUrl()} target="_blank" rel="noreferrer">
+                            View PLP on SuiScan
+                        </a>
+                    )
+                ) : null}
             </div>
         </section>
     );

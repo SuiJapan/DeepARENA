@@ -19,3 +19,7 @@ export function hasPlpSandboxPackageId(): boolean {
 export function plpSandboxExplorerUrl(digest: string): string {
     return `https://suiexplorer.com/txblock/${digest}?network=testnet`;
 }
+
+export function plpSandboxSuiScanPlpUrl(): string {
+    return `https://suiscan.xyz/testnet/coin/${PLP_SANDBOX_CONFIG.plpCoinType}/txs`;
+}
