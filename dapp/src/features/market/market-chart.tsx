@@ -14,12 +14,45 @@ const timeFormatter = new Intl.DateTimeFormat(undefined, {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
+    timeZone: "Asia/Tokyo",
+    timeZoneName: "short",
 });
 
-export function MarketChart({ market }: { market: UseMarketStreamResult }) {
+function rawPriceToNumber(raw: string | null): number | null {
+    if (raw === null) {
+        return null;
+    }
+    const scale = 1_000_000_000n;
+    const value = BigInt(raw);
+    return Number(value / scale) + Number(value % scale) / Number(scale);
+}
+
+function calculateReferenceLineY(history: UseMarketStreamResult["history"], strike: number | null) {
+    if (history.length === 0 || strike === null) {
+        return null;
+    }
+    const prices = [...history.map((point) => point.price), strike];
+    const minPrice = Math.min(...prices);
+    const maxPrice = Math.max(...prices);
+    const midpoint = (minPrice + maxPrice) / 2;
+    const rawRange = maxPrice - minPrice;
+    const range = Math.max(rawRange, Math.max(midpoint * 0.002, 0.0001));
+    const minYPrice = midpoint - range / 2;
+    return 260 - Math.min(Math.max((strike - minYPrice) / range, 0), 1) * 260;
+}
+
+export function MarketChart({
+    binaryStrikeRaw,
+    market,
+}: {
+    binaryStrikeRaw: string | null;
+    market: UseMarketStreamResult;
+}) {
     const { status, history, latestTick, message, oracleId } = market;
     const changePercent = calculateChangePercent(history);
     const chart = calculateChartPath(history, 800, 260);
+    const strike = rawPriceToNumber(binaryStrikeRaw);
+    const strikeLineY = calculateReferenceLineY(history, strike);
     const changeDirection =
         changePercent === null || Math.abs(changePercent) < 0.000001
             ? "flat"
@@ -87,6 +120,15 @@ export function MarketChart({ market }: { market: UseMarketStreamResult }) {
                     </defs>
                     {chart.fillPath ? <path className="chart-fill" d={chart.fillPath} /> : null}
                     {chart.linePath ? <path className="chart-line" d={chart.linePath} /> : null}
+                    {strikeLineY !== null ? (
+                        <line
+                            className="chart-reference-line"
+                            x1="0"
+                            x2="800"
+                            y1={strikeLineY}
+                            y2={strikeLineY}
+                        />
+                    ) : null}
                     {chart.lastPoint ? (
                         <circle
                             className="chart-last-point"
@@ -97,11 +139,16 @@ export function MarketChart({ market }: { market: UseMarketStreamResult }) {
                     ) : null}
                 </svg>
                 <div className="chart-axis">
-                    <span>-100s</span>
-                    <span>-75s</span>
-                    <span>-50s</span>
-                    <span>-25s</span>
-                    <span>Now</span>
+                    {(history.length > 0
+                        ? [history[0], history[Math.floor(history.length / 2)], history.at(-1)]
+                        : []
+                    ).map((point) => (
+                        <span key={`${point?.digest ?? "empty"}:${point?.onchainTimestampMs ?? 0}`}>
+                            {point
+                                ? timeFormatter.format(new Date(point.onchainTimestampMs))
+                                : "--"}
+                        </span>
+                    ))}
                 </div>
             </div>
         </section>

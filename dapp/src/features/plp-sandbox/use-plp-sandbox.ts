@@ -7,6 +7,7 @@ import {
     useDAppKit,
 } from "@mysten/dapp-kit-react";
 import { useCallback, useEffect, useState } from "react";
+import { BALANCE_REFRESH_EVENT } from "@/src/lib/balance-refresh";
 import {
     formatTokenAmount,
     formatTokenInputAmount,
@@ -125,6 +126,16 @@ export function usePlpSandbox() {
 
     useEffect(() => {
         void refreshBalances();
+    }, [refreshBalances]);
+
+    useEffect(() => {
+        const refreshAfterExternalTransaction = () => {
+            void refreshBalances();
+            window.setTimeout(() => void refreshBalances(), 1_500);
+        };
+        window.addEventListener(BALANCE_REFRESH_EVENT, refreshAfterExternalTransaction);
+        return () =>
+            window.removeEventListener(BALANCE_REFRESH_EVENT, refreshAfterExternalTransaction);
     }, [refreshBalances]);
 
     const runLiquidityAction = useCallback(

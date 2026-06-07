@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { calculateMarketRange, formatMarketPrice, marketConfig } from "./config";
+import { calculateMarketRange, formatMarketPrice, marketConfig } from "./config.ts";
 import {
     appendMarketPoint,
     calculateChangePercent,
@@ -10,7 +10,8 @@ import {
     normalizePredictPriceTick,
     parsePredictPrice,
     selectActiveBtcOracle,
-} from "./normalize";
+    selectBtcOracleById,
+} from "./normalize.ts";
 import type { ChartPoint, MarketTick } from "./types";
 
 function price(overrides: Partial<Record<string, unknown>> = {}) {
@@ -216,7 +217,7 @@ describe("market normalization", () => {
         assert.ok(chart.lastPoint && Math.abs(chart.lastPoint.y - 130) < 0.000001);
     });
 
-    it("selects active BTC oracle with the longest expiry", () => {
+    it("selects active BTC oracle with the nearest future expiry", () => {
         const selected = selectActiveBtcOracle(
             [
                 {
@@ -264,7 +265,30 @@ describe("market normalization", () => {
             ],
             1000,
         );
-        assert.equal(selected.oracleId, "0xlong");
+        assert.equal(selected.oracleId, "0xshort");
+    });
+
+    it("selects a specific BTC oracle by id for current-round charts", () => {
+        const selected = selectBtcOracleById(
+            [
+                {
+                    predict_id: "0xpredict",
+                    oracle_id: "0xshort",
+                    oracle_cap_id: "0xcap",
+                    underlying_asset: "BTC",
+                    expiry: 3000,
+                    min_strike: 0,
+                    tick_size: 1,
+                    status: "active",
+                    activated_at: 1,
+                    settlement_price: null,
+                    settled_at: null,
+                    created_checkpoint: 1,
+                },
+            ],
+            "0xshort",
+        );
+        assert.equal(selected.oracleId, "0xshort");
     });
 
     it("throws when no active BTC oracle exists", () => {

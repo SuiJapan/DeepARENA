@@ -114,7 +114,7 @@ function toConnectionStatus(status: MarketStreamStatus): MarketConnectionStatus 
     return status.toUpperCase() as MarketConnectionStatus;
 }
 
-export function useMarketStream(): UseMarketStreamResult {
+export function useMarketStream(currentOracleId: string | null): UseMarketStreamResult {
     const [status, setStatus] = useState<MarketConnectionStatus>("CONNECTING");
     const [history, setHistory] = useState<ChartPoint[]>([]);
     const [latestTick, setLatestTick] = useState<MarketTick | null>(null);
@@ -123,10 +123,26 @@ export function useMarketStream(): UseMarketStreamResult {
     const pendingTickRef = useRef<MarketTick | null>(null);
 
     useEffect(() => {
-        const eventSource = new EventSource("/api/market/stream");
+        setStatus(currentOracleId ? "CONNECTING" : "ERROR");
+        setHistory([]);
+        setLatestTick(null);
+        setMessage(currentOracleId ? null : "NO ACTIVE ROUND");
+        setOracleId(currentOracleId);
+        pendingTickRef.current = null;
+
+        if (!currentOracleId) {
+            return;
+        }
+
+        const eventSource = new EventSource(
+            `/api/market/stream?oracleId=${encodeURIComponent(currentOracleId)}`,
+        );
         const intervalId = window.setInterval(() => {
             const pendingTick = pendingTickRef.current;
             if (!pendingTick) {
+                return;
+            }
+            if (pendingTick.oracleId !== currentOracleId) {
                 return;
             }
 
@@ -148,11 +164,17 @@ export function useMarketStream(): UseMarketStreamResult {
                     return;
                 }
                 if (parsed.type === "snapshot") {
+                    if (parsed.oracle.oracleId !== currentOracleId) {
+                        throw new Error("Market stream oracle mismatch");
+                    }
                     setHistory(parsed.ticks);
                     setLatestTick(parsed.ticks.at(-1) ?? null);
                     setOracleId(parsed.oracle.oracleId);
                     setMessage(null);
                     return;
+                }
+                if (parsed.tick.oracleId !== currentOracleId) {
+                    throw new Error("Market tick oracle mismatch");
                 }
                 pendingTickRef.current = parsed.tick;
             } catch (caught) {
@@ -170,7 +192,7 @@ export function useMarketStream(): UseMarketStreamResult {
             window.clearInterval(intervalId);
             eventSource.close();
         };
-    }, []);
+    }, [currentOracleId]);
 
     return {
         status,

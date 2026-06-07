@@ -1,0 +1,1021 @@
+import { bcs } from "@mysten/sui/bcs";
+import type { SuiClientTypes } from "@mysten/sui/client";
+import type { Transaction } from "@mysten/sui/transactions";
+import { PREDICT_BINARY_CONFIG } from "./config";
+import { readSuiEventPayload } from "./events";
+import { type BudgetedTradePreview, findBudgetedTradePreview, type TradeAmounts } from "./preview";
+import {
+    type BinaryMarketKeyInput,
+    createMintBinaryTransaction,
+    createPreviewTradeAmountsTransaction,
+    createReadBinaryPositionTransaction,
+    createReadManagerBalanceTransaction,
+    target,
+} from "./transactions";
+
+export interface BtcBinaryMarket {
+    oracleId: string;
+    expiryMs: number;
+    strike: bigint;
+}
+
+export type { BudgetedTradePreview, TradeAmounts } from "./preview";
+
+export interface TradePreviewDebugDetails {
+    functionName: string;
+    side: "UP" | "DOWN";
+    walletAddress: string;
+    currentOracleId: string;
+    oracleExpiryMs: number;
+    referenceStrikeRaw: string;
+    betAmountAtomic: string;
+    initialQuantity: string;
+    firstPreviewCalled: boolean;
+    buildTransactionCalled: boolean;
+    quantityCandidate: string;
+    predictObjectId: string;
+    clockObjectId: string;
+    quoteCoinType: string;
+    moveTarget: string;
+    typeArguments: string[];
+    transactionInputs: {
+        predictObjectId: string;
+        oracleObjectId: string;
+        key: {
+            oracleId: string;
+            expiryMs: number;
+            strike: string;
+            isUp: boolean;
+        };
+        quantity: string;
+        clockObjectId: string;
+    };
+    devInspectSender: string;
+    devInspectStatus: string;
+    devInspectError: string | null;
+    moveAbortCode: string | null;
+    returnValuesRaw: unknown;
+    firstPreviewResult?: TradeAmounts | null;
+    firstPreviewError?: string | null;
+    throwReason?: string | null;
+    rawDevInspectResponse?: unknown;
+    effectsStatus?: unknown;
+    results?: unknown;
+    decodedReturnValues?: string[];
+    decodedMintCost?: string | null;
+    decodedRedeemPayout?: string | null;
+}
+
+export class TradePreviewError extends Error {
+    constructor(
+        message: string,
+        readonly details: TradePreviewDebugDetails,
+    ) {
+        super(message);
+        this.name = "TradePreviewError";
+    }
+}
+
+export interface MintEvent {
+    managerId: string;
+    oracleId: string;
+    expiryMs: number;
+    strike: bigint;
+    isUp: boolean;
+    quantity: bigint;
+    cost: bigint;
+    askPrice: bigint;
+}
+
+export interface RedeemEvent {
+    managerId: string;
+    oracleId: string;
+    expiryMs: number;
+    strike: bigint;
+    isUp: boolean;
+    quantity: bigint;
+    payout: bigint;
+    bidPrice: bigint;
+    isSettled: boolean;
+}
+
+interface SimulateClient {
+    core: {
+        simulateTransaction<
+            Include extends SuiClientTypes.SimulateTransactionInclude = Record<never, never>,
+        >(
+            options: SuiClientTypes.SimulateTransactionOptions<Include>,
+        ): Promise<SuiClientTypes.SimulateTransactionResult<Include>>;
+        getBalance(
+            options: SuiClientTypes.GetBalanceOptions,
+        ): Promise<SuiClientTypes.GetBalanceResponse>;
+        waitForTransaction<
+            Include extends SuiClientTypes.TransactionInclude = Record<never, never>,
+        >(
+            options: SuiClientTypes.WaitForTransactionOptions<Include>,
+        ): Promise<SuiClientTypes.TransactionResult<Include>>;
+    };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readString(value: unknown, fieldName: string): string {
+    if (typeof value !== "string" || value.length === 0) {
+        throw new Error(`Invalid ${fieldName}`);
+    }
+    return value;
+}
+
+function readBigInt(value: unknown, fieldName: string): bigint {
+    if (typeof value === "bigint") {
+        return value;
+    }
+    const text = typeof value === "number" ? String(value) : value;
+    if (typeof text !== "string" || !/^(0|[1-9]\d*)$/.test(text)) {
+        throw new Error(`Invalid ${fieldName}`);
+    }
+    return BigInt(text);
+}
+
+function readBoolean(value: unknown, fieldName: string): boolean {
+    if (typeof value !== "boolean") {
+        throw new Error(`Invalid ${fieldName}`);
+    }
+    return value;
+}
+
+function readTransactionDigest(result: unknown): string {
+    if (!isRecord(result)) {
+        throw new Error("Invalid transaction response");
+    }
+    const failed = result.FailedTransaction;
+    if (isRecord(failed)) {
+        throw new Error("Transaction failed");
+    }
+    const transaction = result.Transaction;
+    if (!isRecord(transaction) || typeof transaction.digest !== "string") {
+        throw new Error("Transaction digest is missing");
+    }
+    return transaction.digest;
+}
+
+function parseU64Return(
+    result: SuiClientTypes.SimulateTransactionResult<{ commandResults: true }>,
+) {
+    if (result.$kind === "FailedTransaction") {
+        throw new Error("Simulation failed");
+    }
+    const returns = result.commandResults
+        .flatMap((command) => command.returnValues)
+        .map((value) => BigInt(bcs.U64.parse(value.bcs)));
+    if (returns.length === 0) {
+        throw new Error("Simulation returned no value");
+    }
+    return returns;
+}
+
+function readCommandResults(result: unknown): unknown[] {
+    if (!isRecord(result) || !Array.isArray(result.commandResults)) {
+        return [];
+    }
+    return result.commandResults;
+}
+
+function readCommandReturnValues(command: unknown): unknown[] {
+    if (!isRecord(command) || !Array.isArray(command.returnValues)) {
+        return [];
+    }
+    return command.returnValues;
+}
+
+function decodeU64ReturnValue(value: unknown): bigint {
+    if (!isRecord(value) || !(value.bcs instanceof Uint8Array)) {
+        throw new Error("Invalid u64 return value");
+    }
+    return BigInt(bcs.U64.parse(value.bcs));
+}
+
+function decodeTradeAmountReturns(
+    result: SuiClientTypes.SimulateTransactionResult<{ commandResults: true }>,
+): { mintCost: bigint; redeemPayout: bigint; decodedReturnValues: bigint[] } {
+    if (result.$kind === "FailedTransaction") {
+        throw new Error("Simulation failed");
+    }
+    const commandResults = readCommandResults(result);
+    const lastCommandWithReturns = [...commandResults]
+        .reverse()
+        .find((command) => readCommandReturnValues(command).length > 0);
+    const returnValues = readCommandReturnValues(lastCommandWithReturns);
+    if (returnValues.length < 2) {
+        throw new Error("Trade preview returned fewer than two values");
+    }
+    const decodedReturnValues = returnValues.map(decodeU64ReturnValue);
+    const [mintCost, redeemPayout] = decodedReturnValues;
+    if (mintCost === undefined || redeemPayout === undefined) {
+        throw new Error("Trade preview is missing return values");
+    }
+    return { mintCost, redeemPayout, decodedReturnValues };
+}
+
+function toJsonSafe(value: unknown): unknown {
+    if (typeof value === "bigint") {
+        return value.toString();
+    }
+    if (value instanceof Uint8Array) {
+        return Array.from(value);
+    }
+    if (Array.isArray(value)) {
+        return value.map(toJsonSafe);
+    }
+    if (isRecord(value)) {
+        return Object.fromEntries(
+            Object.entries(value).map(([key, nested]) => [key, toJsonSafe(nested)]),
+        );
+    }
+    return value;
+}
+
+function stringifyError(value: unknown): string {
+    if (value instanceof Error) {
+        return value.stack ?? value.message;
+    }
+    try {
+        return JSON.stringify(value);
+    } catch {
+        return String(value);
+    }
+}
+
+function extractAbortCode(text: string): string | null {
+    return text.match(/abort(?:ed)?(?: with code)?[:\s]+([0-9xa-fA-F]+)/i)?.[1] ?? null;
+}
+
+function readSimulationStatus(result: unknown): { status: string; error: string | null } {
+    if (!isRecord(result)) {
+        return { status: "UNKNOWN", error: "Invalid simulation result" };
+    }
+    if (result.$kind === "FailedTransaction") {
+        return { status: "FailedTransaction", error: stringifyError(result.FailedTransaction) };
+    }
+    if (result.$kind === "Transaction") {
+        return { status: "Transaction", error: null };
+    }
+    return { status: readString(result.$kind, "$kind"), error: null };
+}
+
+function readReturnValuesRaw(result: unknown): unknown {
+    if (!isRecord(result) || !Array.isArray(result.commandResults)) {
+        return null;
+    }
+    return result.commandResults.flatMap((command) =>
+        isRecord(command) && Array.isArray(command.returnValues) ? command.returnValues : [],
+    );
+}
+
+function readEffectsStatus(result: unknown): unknown {
+    if (!isRecord(result)) {
+        return null;
+    }
+    const effects = result.effects;
+    return isRecord(effects) ? (effects.status ?? null) : null;
+}
+
+function createTradePreviewDebugDetails({
+    input,
+    quantity,
+    betAmountAtomic,
+    result,
+    caught,
+    throwReason,
+    decodedReturnValues,
+    decodedMintCost,
+    decodedRedeemPayout,
+}: {
+    input: BinaryMarketKeyInput & { sender: string };
+    quantity: bigint;
+    betAmountAtomic: bigint;
+    result: unknown;
+    caught: unknown;
+    throwReason?: string | null;
+    decodedReturnValues?: bigint[];
+    decodedMintCost?: bigint | null;
+    decodedRedeemPayout?: bigint | null;
+}): TradePreviewDebugDetails {
+    const status = result ? readSimulationStatus(result) : { status: "THREW", error: null };
+    const errorText = status.error ?? (caught ? stringifyError(caught) : null);
+    return {
+        functionName: "previewTradeAmounts",
+        side: input.isUp ? "UP" : "DOWN",
+        walletAddress: input.sender,
+        currentOracleId: input.oracleId,
+        oracleExpiryMs: input.expiryMs,
+        referenceStrikeRaw: input.strike.toString(),
+        betAmountAtomic: betAmountAtomic.toString(),
+        initialQuantity: "1",
+        firstPreviewCalled: true,
+        buildTransactionCalled: true,
+        quantityCandidate: quantity.toString(),
+        predictObjectId: PREDICT_BINARY_CONFIG.predictObjectId,
+        clockObjectId: PREDICT_BINARY_CONFIG.clockObjectId,
+        quoteCoinType: PREDICT_BINARY_CONFIG.quoteCoinType,
+        moveTarget: target("predict", "get_trade_amounts"),
+        typeArguments: [],
+        transactionInputs: {
+            predictObjectId: PREDICT_BINARY_CONFIG.predictObjectId,
+            oracleObjectId: input.oracleId,
+            key: {
+                oracleId: input.oracleId,
+                expiryMs: input.expiryMs,
+                strike: input.strike.toString(),
+                isUp: input.isUp,
+            },
+            quantity: quantity.toString(),
+            clockObjectId: PREDICT_BINARY_CONFIG.clockObjectId,
+        },
+        devInspectSender: input.sender,
+        devInspectStatus: status.status,
+        devInspectError: errorText,
+        moveAbortCode: errorText ? extractAbortCode(errorText) : null,
+        returnValuesRaw: result ? toJsonSafe(readReturnValuesRaw(result)) : null,
+        throwReason: throwReason ?? null,
+        rawDevInspectResponse: result ? toJsonSafe(result) : null,
+        effectsStatus: result ? toJsonSafe(readEffectsStatus(result)) : null,
+        results: result ? toJsonSafe(readCommandResults(result)) : null,
+        decodedReturnValues: decodedReturnValues?.map((value) => value.toString()) ?? [],
+        decodedMintCost: decodedMintCost?.toString() ?? null,
+        decodedRedeemPayout: decodedRedeemPayout?.toString() ?? null,
+    };
+}
+
+const loggedFirstPreviewExecutions = new Set<string>();
+const loggedReturnValueDecodes = new Set<string>();
+
+function logFirstPreviewExecution({
+    input,
+    budget,
+    quantity,
+    details,
+    firstPreviewResult,
+    firstPreviewError,
+    throwReason,
+}: {
+    input: BinaryMarketKeyInput & { sender: string };
+    budget: bigint;
+    quantity: bigint;
+    details: TradePreviewDebugDetails;
+    firstPreviewResult: TradeAmounts | null;
+    firstPreviewError: string | null;
+    throwReason: string | null;
+}) {
+    const side = input.isUp ? "UP" : "DOWN";
+    const key = [
+        side,
+        input.sender,
+        input.oracleId,
+        input.expiryMs,
+        input.strike.toString(),
+        budget.toString(),
+    ].join(":");
+    if (loggedFirstPreviewExecutions.has(key)) {
+        return;
+    }
+    loggedFirstPreviewExecutions.add(key);
+    console.info("Binary odds preview execution", {
+        side,
+        functionName: "previewTradeWithinBudget",
+        betAmountAtomic: budget.toString(),
+        initialQuantity: "1",
+        firstPreviewCalled: true,
+        buildTransactionCalled: true,
+        moveTarget: details.moveTarget,
+        transactionInputs: details.transactionInputs,
+        firstPreviewResult: firstPreviewResult
+            ? {
+                  mintCost: firstPreviewResult.mintCost.toString(),
+                  redeemPayout: firstPreviewResult.redeemPayout.toString(),
+              }
+            : null,
+        firstPreviewError,
+        quantityCandidate: quantity.toString(),
+        throwReason,
+    });
+}
+
+function logTradeAmountDecode({
+    input,
+    quantity,
+    result,
+    returnValuesRaw,
+    decodedReturnValues,
+    mintCost,
+    redeemPayout,
+}: {
+    input: BinaryMarketKeyInput & { sender: string };
+    quantity: bigint;
+    result: unknown;
+    returnValuesRaw: unknown;
+    decodedReturnValues: bigint[];
+    mintCost: bigint;
+    redeemPayout: bigint;
+}) {
+    const side = input.isUp ? "UP" : "DOWN";
+    const key = [
+        side,
+        input.sender,
+        input.oracleId,
+        input.expiryMs,
+        input.strike.toString(),
+        quantity.toString(),
+    ].join(":");
+    if (loggedReturnValueDecodes.has(key)) {
+        return;
+    }
+    loggedReturnValueDecodes.add(key);
+    console.info("Binary odds preview return decode", {
+        side,
+        quantity: quantity.toString(),
+        rawDevInspectResponse: toJsonSafe(result),
+        effectsStatus: toJsonSafe(readEffectsStatus(result)),
+        results: toJsonSafe(readCommandResults(result)),
+        returnValuesRaw: toJsonSafe(returnValuesRaw),
+        returnValuesBeforeDecode: toJsonSafe(
+            readCommandReturnValues(
+                [...readCommandResults(result)]
+                    .reverse()
+                    .find((command) => readCommandReturnValues(command).length > 0),
+            ),
+        ),
+        decodedReturnValues: decodedReturnValues.map((value) => value.toString()),
+        decodedMintCost: mintCost.toString(),
+        decodedRedeemPayout: redeemPayout.toString(),
+    });
+}
+
+async function previewTradeAmountsWithDebug(
+    client: SimulateClient,
+    input: BinaryMarketKeyInput & {
+        sender: string;
+        quantity: bigint;
+        betAmountAtomic?: bigint;
+    },
+): Promise<{ amounts: TradeAmounts; details: TradePreviewDebugDetails }> {
+    const transaction = createPreviewTradeAmountsTransaction(input);
+    let result: SuiClientTypes.SimulateTransactionResult<{ commandResults: true }> | null = null;
+    try {
+        result = await client.core.simulateTransaction({
+            transaction,
+            checksEnabled: false,
+            include: { commandResults: true },
+        });
+        const { mintCost, redeemPayout, decodedReturnValues } = decodeTradeAmountReturns(result);
+        const amounts = { mintCost, redeemPayout };
+        logTradeAmountDecode({
+            input,
+            quantity: input.quantity,
+            result,
+            returnValuesRaw: readReturnValuesRaw(result),
+            decodedReturnValues,
+            mintCost,
+            redeemPayout,
+        });
+        return {
+            amounts,
+            details: {
+                ...createTradePreviewDebugDetails({
+                    input,
+                    quantity: input.quantity,
+                    betAmountAtomic: input.betAmountAtomic ?? 0n,
+                    result,
+                    caught: null,
+                    decodedReturnValues,
+                    decodedMintCost: mintCost,
+                    decodedRedeemPayout: redeemPayout,
+                }),
+                firstPreviewResult: amounts,
+                firstPreviewError: null,
+            },
+        };
+    } catch (caught) {
+        const details = createTradePreviewDebugDetails({
+            input,
+            quantity: input.quantity,
+            betAmountAtomic: input.betAmountAtomic ?? 0n,
+            result,
+            caught,
+        });
+        throw new TradePreviewError("Trade preview failed", {
+            ...details,
+            firstPreviewResult: null,
+            firstPreviewError: details.devInspectError,
+        });
+    }
+}
+
+export async function simulateU64Returns(client: SimulateClient, transaction: Transaction) {
+    return parseU64Return(
+        await client.core.simulateTransaction({
+            transaction,
+            checksEnabled: false,
+            include: { commandResults: true },
+        }),
+    );
+}
+
+export async function readWalletQuoteBalance(
+    client: SimulateClient,
+    owner: string,
+): Promise<bigint> {
+    const response = await client.core.getBalance({
+        owner,
+        coinType: PREDICT_BINARY_CONFIG.quoteCoinType,
+    });
+    return readBigInt(response.balance.balance, "wallet quote balance");
+}
+
+export async function readManagerBalance(
+    client: SimulateClient,
+    sender: string,
+    managerId: string,
+): Promise<bigint> {
+    const values = await simulateU64Returns(
+        client,
+        createReadManagerBalanceTransaction({ sender, managerId }),
+    );
+    return values[0] ?? 0n;
+}
+
+export async function readBinaryPosition(
+    client: SimulateClient,
+    input: BinaryMarketKeyInput & { sender: string; managerId: string },
+): Promise<bigint> {
+    const values = await simulateU64Returns(client, createReadBinaryPositionTransaction(input));
+    return values[0] ?? 0n;
+}
+
+export async function previewTradeAmountsServerOnly(
+    client: SimulateClient,
+    input: BinaryMarketKeyInput & {
+        sender: string;
+        quantity: bigint;
+        betAmountAtomic?: bigint;
+    },
+): Promise<TradeAmounts> {
+    return (await previewTradeAmountsWithDebug(client, input)).amounts;
+}
+
+export async function previewTradeWithinBudgetServerOnly({
+    client,
+    sender,
+    oracleId,
+    expiryMs,
+    strike,
+    isUp,
+    budget,
+}: {
+    client: SimulateClient;
+    sender: string;
+    oracleId: string;
+    expiryMs: number;
+    strike: bigint;
+    isUp: boolean;
+    budget: bigint;
+}): Promise<BudgetedTradePreview> {
+    if (budget <= 0n) {
+        throw new Error("Amount must be greater than zero");
+    }
+
+    const baseInput = { sender, oracleId, expiryMs, strike, isUp, betAmountAtomic: budget };
+    const initialQuantity = 1n;
+    let lastQuantityCandidate: bigint | null = null;
+    let lastPreviewDetails: TradePreviewDebugDetails | null = null;
+    let lastPreviewAmounts: TradeAmounts | null = null;
+    const detailsByQuantity = new Map<string, TradePreviewDebugDetails>();
+    let firstPreviewLogged = false;
+    const preview = await findBudgetedTradePreview({
+        budget,
+        preview: async (quantity) => {
+            lastQuantityCandidate = quantity;
+            try {
+                const { amounts, details } = await previewTradeAmountsWithDebug(client, {
+                    ...baseInput,
+                    quantity,
+                });
+                lastPreviewDetails = details;
+                lastPreviewAmounts = amounts;
+                detailsByQuantity.set(quantity.toString(), details);
+                if (!firstPreviewLogged) {
+                    firstPreviewLogged = true;
+                    logFirstPreviewExecution({
+                        input: baseInput,
+                        budget,
+                        quantity,
+                        details,
+                        firstPreviewResult: amounts,
+                        firstPreviewError: null,
+                        throwReason: null,
+                    });
+                }
+                return amounts;
+            } catch (caught) {
+                if (caught instanceof TradePreviewError) {
+                    lastPreviewDetails = caught.details;
+                    if (!firstPreviewLogged) {
+                        firstPreviewLogged = true;
+                        logFirstPreviewExecution({
+                            input: baseInput,
+                            budget,
+                            quantity,
+                            details: caught.details,
+                            firstPreviewResult: null,
+                            firstPreviewError: caught.details.devInspectError,
+                            throwReason: caught.message,
+                        });
+                    }
+                }
+                throw caught;
+            }
+        },
+        createNoMintableQuantityError: ({ attempts }) => {
+            const throwReason = "Amount is too small for a mintable quantity";
+            const details =
+                lastPreviewDetails ??
+                createTradePreviewDebugDetails({
+                    input: baseInput,
+                    quantity: lastQuantityCandidate ?? initialQuantity,
+                    betAmountAtomic: budget,
+                    result: null,
+                    caught: new Error(throwReason),
+                    throwReason,
+                });
+            console.error("Binary odds preview no mintable quantity", {
+                side: isUp ? "UP" : "DOWN",
+                lastTriedQuantity: (lastQuantityCandidate ?? initialQuantity).toString(),
+                lastMintCost: lastPreviewAmounts?.mintCost.toString() ?? null,
+                lastRedeemPayout: lastPreviewAmounts?.redeemPayout.toString() ?? null,
+                attempts,
+                searchLimit: 96,
+                reason: "No candidate satisfied mintCost > 0 and mintCost <= betAmountAtomic after exponential search",
+            });
+            return new TradePreviewError(throwReason, {
+                ...details,
+                functionName: "previewTradeWithinBudget",
+                quantityCandidate: (lastQuantityCandidate ?? initialQuantity).toString(),
+                throwReason,
+                devInspectError: details.devInspectError ?? throwReason,
+            });
+        },
+    });
+    return {
+        ...preview,
+        debug:
+            detailsByQuantity.get(preview.quantity.toString()) ?? lastPreviewDetails ?? undefined,
+    };
+}
+
+export async function previewTradeWithinBudgetFast({
+    client,
+    sender,
+    oracleId,
+    expiryMs,
+    strike,
+    isUp,
+    budget,
+}: {
+    client: SimulateClient;
+    sender: string;
+    oracleId: string;
+    expiryMs: number;
+    strike: bigint;
+    isUp: boolean;
+    budget: bigint;
+}): Promise<BudgetedTradePreview> {
+    if (budget <= 0n) {
+        throw new Error("Amount must be greater than zero");
+    }
+
+    const baseInput = { sender, oracleId, expiryMs, strike, isUp, betAmountAtomic: budget };
+    const seen = new Set<string>();
+    let attempts = 0;
+    let best: BudgetedTradePreview | null = null;
+    let lastDetails: TradePreviewDebugDetails | null = null;
+    let lastMintCost: string | null = null;
+    let lastRedeemPayout: string | null = null;
+    let lastQuantity = 1n;
+
+    const previewQuantity = async (quantity: bigint): Promise<BudgetedTradePreview | null> => {
+        const normalized = quantity > 0n ? quantity : 1n;
+        const key = normalized.toString();
+        if (seen.has(key)) {
+            return null;
+        }
+        seen.add(key);
+        attempts += 1;
+        lastQuantity = normalized;
+        const { amounts, details } = await previewTradeAmountsWithDebug(client, {
+            ...baseInput,
+            quantity: normalized,
+        });
+        lastDetails = details;
+        lastMintCost = amounts.mintCost.toString();
+        lastRedeemPayout = amounts.redeemPayout.toString();
+        if (amounts.mintCost > 0n && amounts.mintCost <= budget) {
+            const candidate = {
+                quantity: normalized,
+                firstTriedQuantity: budget,
+                ...amounts,
+                debug: details,
+            };
+            if (!best || candidate.quantity > best.quantity) {
+                best = candidate;
+            }
+            return candidate;
+        }
+        return {
+            quantity: normalized,
+            firstTriedQuantity: budget,
+            ...amounts,
+            debug: details,
+        };
+    };
+
+    let probeQuantity = budget;
+    let probe = await previewQuantity(probeQuantity);
+    for (let probeAttempts = 0; probe?.mintCost === 0n && probeAttempts < 8; probeAttempts += 1) {
+        probeQuantity *= 2n;
+        probe = await previewQuantity(probeQuantity);
+    }
+
+    if (!probe || probe.mintCost <= 0n) {
+        const throwReason = "Amount is too small for a mintable quantity";
+        throw new TradePreviewError(throwReason, {
+            ...(lastDetails ??
+                createTradePreviewDebugDetails({
+                    input: baseInput,
+                    quantity: lastQuantity,
+                    betAmountAtomic: budget,
+                    result: null,
+                    caught: new Error(throwReason),
+                    throwReason,
+                })),
+            functionName: "previewTradeWithinBudgetFast",
+            quantityCandidate: lastQuantity.toString(),
+            decodedMintCost: lastMintCost,
+            decodedRedeemPayout: lastRedeemPayout,
+            throwReason,
+        });
+    }
+
+    let nextQuantity = (budget * probe.quantity) / probe.mintCost;
+    if (nextQuantity <= 0n) {
+        nextQuantity = 1n;
+    }
+
+    for (let refineAttempts = 0; refineAttempts < 3; refineAttempts += 1) {
+        const result = await previewQuantity(nextQuantity);
+        if (!result) {
+            nextQuantity += 1n;
+            continue;
+        }
+        if (result.mintCost > 0n) {
+            const adjusted = (budget * result.quantity) / result.mintCost;
+            if (adjusted === nextQuantity) {
+                nextQuantity = result.mintCost <= budget ? nextQuantity + 1n : nextQuantity - 1n;
+            } else {
+                nextQuantity = adjusted > 0n ? adjusted : 1n;
+            }
+        } else {
+            nextQuantity *= 2n;
+        }
+    }
+
+    if (!best) {
+        const throwReason = "Amount is too small for a mintable quantity";
+        console.error("Binary odds preview no mintable quantity", {
+            side: isUp ? "UP" : "DOWN",
+            lastTriedQuantity: lastQuantity.toString(),
+            lastMintCost,
+            lastRedeemPayout,
+            attempts,
+            searchLimit: 12,
+            reason: "No fast preview candidate satisfied mintCost > 0 and mintCost <= betAmountAtomic",
+        });
+        throw new TradePreviewError(throwReason, {
+            ...(lastDetails ??
+                createTradePreviewDebugDetails({
+                    input: baseInput,
+                    quantity: lastQuantity,
+                    betAmountAtomic: budget,
+                    result: null,
+                    caught: new Error(throwReason),
+                    throwReason,
+                })),
+            functionName: "previewTradeWithinBudgetFast",
+            quantityCandidate: lastQuantity.toString(),
+            decodedMintCost: lastMintCost,
+            decodedRedeemPayout: lastRedeemPayout,
+            throwReason,
+        });
+    }
+
+    const finalBest = best as BudgetedTradePreview;
+    console.info("Binary odds preview fast search", {
+        side: isUp ? "UP" : "DOWN",
+        attempts,
+        quantity: finalBest.quantity.toString(),
+        mintCost: finalBest.mintCost.toString(),
+        redeemPayout: finalBest.redeemPayout.toString(),
+    });
+    return finalBest;
+}
+
+export async function calculateQuantityWithinBudget({
+    client,
+    sender,
+    managerId,
+    market,
+    isUp,
+    budget,
+    managerBalance,
+}: {
+    client: SimulateClient;
+    sender: string;
+    managerId: string;
+    market: BtcBinaryMarket;
+    isUp: boolean;
+    budget: bigint;
+    managerBalance: bigint;
+}): Promise<{ quantity: bigint; cost: bigint; askPrice: bigint; depositAmount: bigint }> {
+    let low = 1n;
+    let high = 1n;
+    let best = { quantity: 0n, cost: 0n, askPrice: 0n };
+    const simulateMint = async (quantity: bigint): Promise<MintEvent | null> => {
+        const depositAmount = budget > managerBalance ? budget - managerBalance : 0n;
+        const tx = createMintBinaryTransaction({
+            sender,
+            managerId,
+            oracleId: market.oracleId,
+            expiryMs: market.expiryMs,
+            strike: market.strike,
+            isUp,
+            quantity,
+            depositAmount,
+        });
+        try {
+            const simulated = await client.core.simulateTransaction({
+                transaction: tx,
+                include: { events: true },
+            });
+            return simulated.$kind === "Transaction"
+                ? readMintEvent(simulated.Transaction.events)
+                : null;
+        } catch {
+            return null;
+        }
+    };
+
+    for (let attempts = 0; attempts < 96; attempts += 1) {
+        const event = await simulateMint(high);
+        if (!event || event.cost > budget) {
+            break;
+        }
+        if (event.cost > 0n) {
+            best = { quantity: high, cost: event.cost, askPrice: event.askPrice };
+        }
+        high *= 2n;
+    }
+
+    while (low <= high) {
+        const quantity = (low + high) / 2n;
+        const event = await simulateMint(quantity);
+        if (event && event.cost > 0n && event.cost <= budget) {
+            best = { quantity, cost: event.cost, askPrice: event.askPrice };
+            low = quantity + 1n;
+        } else {
+            high = quantity - 1n;
+        }
+    }
+
+    if (best.quantity <= 0n) {
+        throw new Error("Amount is too small for a mintable quantity");
+    }
+
+    return {
+        ...best,
+        depositAmount: best.cost > managerBalance ? best.cost - managerBalance : 0n,
+    };
+}
+
+export async function findPredictManager(owner: string): Promise<string | null> {
+    let cursor: unknown = null;
+    for (let page = 0; page < 10; page += 1) {
+        const response = await fetch(PREDICT_BINARY_CONFIG.fullnodeJsonRpcUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+                jsonrpc: "2.0",
+                id: page + 1,
+                method: "suix_queryEvents",
+                params: [
+                    {
+                        MoveEventType: `${PREDICT_BINARY_CONFIG.packageId}::predict_manager::PredictManagerCreated`,
+                    },
+                    cursor,
+                    50,
+                    true,
+                ],
+            }),
+        });
+        if (!response.ok) {
+            throw new Error(`Manager event query failed: ${response.status}`);
+        }
+        const payload = (await response.json()) as unknown;
+        if (
+            !isRecord(payload) ||
+            !isRecord(payload.result) ||
+            !Array.isArray(payload.result.data)
+        ) {
+            throw new Error("Invalid manager event query response");
+        }
+        for (const event of payload.result.data) {
+            if (!isRecord(event) || !isRecord(event.parsedJson)) {
+                continue;
+            }
+            const eventOwner = readString(event.parsedJson.owner, "owner").toLowerCase();
+            if (eventOwner === owner.toLowerCase()) {
+                return readString(event.parsedJson.manager_id, "manager_id");
+            }
+        }
+        if (payload.result.hasNextPage !== true) {
+            return null;
+        }
+        cursor = payload.result.nextCursor;
+    }
+    return null;
+}
+
+export function readManagerCreatedEvent(events: SuiClientTypes.Event[] | undefined): string | null {
+    const event = events?.find(
+        (item) =>
+            item.eventType ===
+            `${PREDICT_BINARY_CONFIG.packageId}::predict_manager::PredictManagerCreated`,
+    );
+    const payload = readSuiEventPayload(event);
+    return payload ? readString(payload.manager_id, "manager_id") : null;
+}
+
+export function findMintEvent(
+    events: SuiClientTypes.Event[] | undefined,
+): SuiClientTypes.Event | null {
+    return (
+        events?.find(
+            (item) =>
+                item.eventType === `${PREDICT_BINARY_CONFIG.packageId}::predict::PositionMinted`,
+        ) ?? null
+    );
+}
+
+export function readMintEvent(events: SuiClientTypes.Event[] | undefined): MintEvent {
+    const event = findMintEvent(events);
+    const payload = readSuiEventPayload(event);
+    if (!payload) {
+        throw new Error("PositionMinted event was not found");
+    }
+    return {
+        managerId: readString(payload.manager_id, "manager_id"),
+        oracleId: readString(payload.oracle_id, "oracle_id"),
+        expiryMs: Number(readBigInt(payload.expiry, "expiry")),
+        strike: readBigInt(payload.strike, "strike"),
+        isUp: readBoolean(payload.is_up, "is_up"),
+        quantity: readBigInt(payload.quantity, "quantity"),
+        cost: readBigInt(payload.cost, "cost"),
+        askPrice: readBigInt(payload.ask_price, "ask_price"),
+    };
+}
+
+export function readRedeemEvent(events: SuiClientTypes.Event[] | undefined): RedeemEvent {
+    const event = events?.find(
+        (item) =>
+            item.eventType === `${PREDICT_BINARY_CONFIG.packageId}::predict::PositionRedeemed`,
+    );
+    const payload = readSuiEventPayload(event);
+    if (!payload) {
+        throw new Error("PositionRedeemed event was not found");
+    }
+    return {
+        managerId: readString(payload.manager_id, "manager_id"),
+        oracleId: readString(payload.oracle_id, "oracle_id"),
+        expiryMs: Number(readBigInt(payload.expiry, "expiry")),
+        strike: readBigInt(payload.strike, "strike"),
+        isUp: readBoolean(payload.is_up, "is_up"),
+        quantity: readBigInt(payload.quantity, "quantity"),
+        payout: readBigInt(payload.payout, "payout"),
+        bidPrice: readBigInt(payload.bid_price, "bid_price"),
+        isSettled: readBoolean(payload.is_settled, "is_settled"),
+    };
+}
+
+export function readDigest(result: unknown): string {
+    return readTransactionDigest(result);
+}

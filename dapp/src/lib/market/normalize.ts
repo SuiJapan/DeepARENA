@@ -41,15 +41,16 @@ export function parseU64String(value: unknown, fieldName: string): string {
 }
 
 function parseSafePositiveInteger(value: unknown, fieldName: string): number {
+    const parsedValue = typeof value === "string" ? Number(value) : value;
     if (
-        typeof value !== "number" ||
-        !Number.isSafeInteger(value) ||
-        value <= 0 ||
-        !Number.isFinite(value)
+        typeof parsedValue !== "number" ||
+        !Number.isSafeInteger(parsedValue) ||
+        parsedValue <= 0 ||
+        !Number.isFinite(parsedValue)
     ) {
         throw new Error(`Invalid ${fieldName}`);
     }
-    return value;
+    return parsedValue;
 }
 
 function parseSafeNonNegativeInteger(value: unknown, fieldName: string): number {
@@ -230,10 +231,23 @@ export function selectActiveBtcOracle(input: unknown, nowMs: number): SelectedMa
                 oracle.status === "active" &&
                 oracle.expiryMs > nowMs,
         )
-        .sort((left, right) => right.expiryMs - left.expiryMs);
+        .sort((left, right) => left.expiryMs - right.expiryMs);
     const selected = activeOracles[0];
     if (!selected) {
         throw new Error("No active BTC oracle found");
+    }
+    return { oracleId: selected.oracleId, expiryMs: selected.expiryMs };
+}
+
+export function selectBtcOracleById(input: unknown, oracleId: string): SelectedMarketOracle {
+    if (!Array.isArray(input)) {
+        throw new Error("Invalid oracle list");
+    }
+    const selected = input
+        .map(parsePredictOracle)
+        .find((oracle) => oracle.underlyingAsset === "BTC" && oracle.oracleId === oracleId);
+    if (!selected) {
+        throw new Error("BTC oracle was not found");
     }
     return { oracleId: selected.oracleId, expiryMs: selected.expiryMs };
 }

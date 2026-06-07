@@ -7,6 +7,7 @@ import {
     normalizePredictPriceTick,
     parsePredictPrice,
     selectActiveBtcOracle,
+    selectBtcOracleById,
 } from "./normalize";
 import type { MarketStreamEvent, MarketTick, SelectedMarketOracle } from "./types";
 
@@ -28,7 +29,10 @@ class PredictMarketStreamSession implements MarketStreamSession {
     private lastOracleRefreshMs = 0;
     private activeRequest: AbortController | null = null;
 
-    constructor(private readonly listener: Listener) {}
+    constructor(
+        private readonly listener: Listener,
+        private readonly fixedOracleId?: string,
+    ) {}
 
     start() {
         this.emitStatus("connecting");
@@ -145,7 +149,9 @@ class PredictMarketStreamSession implements MarketStreamSession {
             return this.oracle;
         }
 
-        const oracle = await fetchActiveBtcOracle(nowMs, (url) => this.fetchJson(url));
+        const oracle = this.fixedOracleId
+            ? await fetchBtcOracleById(this.fixedOracleId, (url) => this.fetchJson(url))
+            : await fetchActiveBtcOracle(nowMs, (url) => this.fetchJson(url));
         this.oracle = oracle;
         this.lastOracleRefreshMs = nowMs;
         return oracle;
@@ -235,6 +241,18 @@ async function fetchActiveBtcOracle(
     );
 }
 
+async function fetchBtcOracleById(
+    oracleId: string,
+    fetchJsonFn: FetchJson,
+): Promise<SelectedMarketOracle> {
+    return selectBtcOracleById(
+        await fetchJsonFn(
+            `${marketConfig.predictServerUrl}/predicts/${marketConfig.predictId}/oracles`,
+        ),
+        oracleId,
+    );
+}
+
 async function fetchPriceHistory(
     oracleId: string,
     receivedAtMs: number,
@@ -287,8 +305,11 @@ function safeLogMessage(caught: unknown): string {
     return caught instanceof Error ? caught.message : "Unknown market stream error";
 }
 
-export function createDeepbookPredictMarketStream(listener: Listener): MarketStreamSession {
-    const session = new PredictMarketStreamSession(listener);
+export function createDeepbookPredictMarketStream(
+    listener: Listener,
+    oracleId?: string,
+): MarketStreamSession {
+    const session = new PredictMarketStreamSession(listener, oracleId);
     session.start();
     return session;
 }

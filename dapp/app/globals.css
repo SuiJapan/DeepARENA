@@ -210,7 +210,7 @@ button:disabled {
 
 .arena-band {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr);
     gap: 32px;
     align-items: center;
     max-width: 1380px;
@@ -278,7 +278,7 @@ button:disabled {
 
 .live-round-content {
     display: grid;
-    grid-template-columns: minmax(150px, 1fr) auto auto auto;
+    grid-template-columns: minmax(150px, 1fr) repeat(3, auto);
     gap: 28px;
     align-items: end;
     margin-top: 14px;
@@ -316,6 +316,51 @@ button:disabled {
     height: 100%;
     background: #78dbb8;
     transition: width 1s linear;
+}
+
+.round-price-line {
+    position: relative;
+    margin-top: 18px;
+    padding-top: 18px;
+    border-top: 1px solid #58666b;
+}
+
+.round-price-marker {
+    position: absolute;
+    top: -8px;
+    transform: translateX(-50%);
+}
+
+.round-price-marker::before {
+    display: block;
+    width: 0;
+    height: 0;
+    margin: 0 auto 4px;
+    border-right: 5px solid transparent;
+    border-left: 5px solid transparent;
+    border-bottom: 7px solid #78dbb8;
+    content: "";
+}
+
+.round-line-labels {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.round-line-labels span {
+    overflow-wrap: anywhere;
+    color: white;
+    font-family: var(--font-mono);
+    font-size: 10px;
+}
+
+.round-line-labels span:nth-child(2) {
+    text-align: center;
+}
+
+.round-line-labels span:nth-child(3) {
+    text-align: right;
 }
 
 .arena-prize,
@@ -507,11 +552,40 @@ button:disabled {
 }
 
 .binary-entry-status {
+    display: grid;
+    gap: 3px;
     min-height: 24px;
     margin-top: 7px;
     color: var(--muted);
     font-size: 8px;
     line-height: 1.4;
+}
+
+.binary-entry-status a {
+    color: inherit;
+    font-weight: 800;
+}
+
+.binary-title-countdown {
+    display: grid;
+    gap: 5px;
+    justify-items: end;
+    text-align: right;
+}
+
+.binary-title-countdown span {
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 8px;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+
+.binary-title-countdown strong {
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 16px;
+    font-weight: 800;
 }
 
 .trade-card.range {
@@ -1009,6 +1083,13 @@ button:disabled {
     fill: none;
     stroke: var(--green);
     stroke-width: 4;
+    vector-effect: non-scaling-stroke;
+}
+
+.chart-reference-line {
+    stroke: var(--coral);
+    stroke-dasharray: 8 7;
+    stroke-width: 2;
     vector-effect: non-scaling-stroke;
 }
 

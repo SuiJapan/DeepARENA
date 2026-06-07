@@ -11,11 +11,16 @@ function encodeSse(event: MarketStreamEvent): Uint8Array {
 }
 
 export function GET(request: Request): Response {
+    const url = new URL(request.url);
+    const oracleId = url.searchParams.get("oracleId");
     let cleanupSession = () => {};
     const stream = new ReadableStream<Uint8Array>({
         start(controller) {
             let closed = false;
-            const session = createDeepbookPredictMarketStream((event) => safeEnqueue(event));
+            const session = createDeepbookPredictMarketStream(
+                (event) => safeEnqueue(event),
+                oracleId && oracleId.length > 0 ? oracleId : undefined,
+            );
 
             function safeEnqueue(event: MarketStreamEvent): boolean {
                 if (closed || request.signal.aborted) {
