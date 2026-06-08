@@ -1,12 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useDeepArena } from "@/src/features/deep-arena/use-deep-arena";
 import { MarketChart } from "@/src/features/market/market-chart";
 import { useMarketStream } from "@/src/features/market/use-market-stream";
 import { PlpSandboxPanel } from "@/src/features/plp-sandbox/plp-sandbox-panel";
 import { BinaryPortfolioSection } from "@/src/features/predict-binary/binary-portfolio-section";
 import { PredictBinaryCard } from "@/src/features/predict-binary/predict-binary-card";
+import { usePredictRange } from "@/src/features/predict-range/use-predict-range";
 import {
     type PredictRoundMarket,
     usePredictRound,
@@ -17,13 +18,6 @@ import { formatMarketPrice, marketConfig } from "@/src/lib/market/config";
 import { WalletStatus } from "./wallet-status";
 
 type View = "arena" | "portfolio" | "ranking";
-type RangeDirection = "RANGE" | "BREAK";
-
-const nextRangeRound = {
-    roundId: "BTC-RANGE-ROUND-002",
-    odds: "2x",
-    defaultAmount: 100,
-};
 
 function formatAmount(amount: TokenAmount, maximumFractionDigits = 2): string {
     const value = Number(amount.atomic) / 10 ** amount.decimals;
@@ -84,18 +78,30 @@ function LiveRoundPanel({
     progressPercent: number;
     currentPrice: number | null;
 }) {
-    const round = roundMarket?.round ?? null;
-    const currentOracle = roundMarket?.currentOracle ?? null;
+    const [displayMarket, setDisplayMarket] = useState<PredictRoundMarket | null>(roundMarket);
+    useEffect(() => {
+        if (!roundMarket) {
+            return;
+        }
+        if (roundMarket.round && roundMarket.currentOracle) {
+            setDisplayMarket(roundMarket);
+            return;
+        }
+        setDisplayMarket((current) => current ?? roundMarket);
+    }, [roundMarket]);
+
+    const round = displayMarket?.round ?? null;
+    const currentOracle = displayMarket?.currentOracle ?? null;
     const stateLabel =
-        roundMarket?.state === "BETTING_OPEN"
+        displayMarket?.state === "BETTING_OPEN"
             ? "BETTING OPEN"
-            : roundMarket?.state === "FINAL_LIVE"
+            : displayMarket?.state === "FINAL_LIVE"
               ? "FINAL LIVE"
-              : roundMarket?.state === "LOCKING_ROUND"
+              : displayMarket?.state === "LOCKING_ROUND"
                 ? "LOCKING ROUND"
-                : roundMarket?.state === "ROUND_LOCK_ERROR"
+                : displayMarket?.state === "ROUND_LOCK_ERROR"
                   ? "ROUND UNAVAILABLE"
-                  : roundMarket?.state === "ROUND_DATA_ERROR"
+                  : displayMarket?.state === "ROUND_DATA_ERROR"
                     ? "ROUND DATA ERROR"
                     : "NO ACTIVE ROUND";
 
@@ -137,34 +143,33 @@ function LiveRoundPanel({
 }
 
 function NextRangeRoundCard({ roundMarket }: { roundMarket: PredictRoundMarket | null }) {
-    const [direction, setDirection] = useState<RangeDirection>("RANGE");
-    const [amount, setAmount] = useState(String(nextRangeRound.defaultAmount));
-    const [entryMessage, setEntryMessage] = useState<string | null>(null);
-    const amountNumber = Number(amount);
-    const isBettingOpen = roundMarket?.state === "BETTING_OPEN";
-    const canEnter = false && isBettingOpen && Number.isFinite(amountNumber) && amountNumber > 0;
-    const rangeLabel = "--";
-
-    function enterNextRound() {
-        if (!canEnter) {
+    const range = usePredictRange(roundMarket);
+    const displayDebugKeyRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (process.env.NODE_ENV === "production") {
             return;
         }
-
-        console.log({
-            direction,
-            amount: amountNumber,
-            roundId: nextRangeRound.roundId,
-        });
-        setEntryMessage(`${direction} entry queued for ${amountNumber} DUSDC`);
-    }
+        const debugKey = JSON.stringify(range.displayDebug);
+        if (displayDebugKeyRef.current === debugKey) {
+            return;
+        }
+        displayDebugKeyRef.current = debugKey;
+        console.info("Range card display state", range.displayDebug);
+    }, [range.displayDebug]);
+    const statusMessage =
+        range.direction === "BREAK"
+            ? (range.breakPayoutLabel ?? "BREAK is a two-leg position: lower DOWN and upper UP.")
+            : range.expectedPayout
+              ? `Max payout ${range.expectedPayout}`
+              : (range.unavailableReason ?? range.message);
 
     return (
         <section className="trade-card range next-range-card">
             <div className="card-title">
                 <div>
-                    <span>Vertical Range · Next round</span>
+                    <span>BTC Break / Range</span>
                     <h2>
-                        {marketConfig.displaySymbol} {rangeLabel}
+                        {marketConfig.displaySymbol} {range.marketLabel}
                     </h2>
                 </div>
             </div>
@@ -172,25 +177,25 @@ function NextRangeRoundCard({ roundMarket }: { roundMarket: PredictRoundMarket |
                 <legend>Choose range outcome</legend>
                 <button
                     type="button"
-                    className="range-choice"
-                    data-active={direction === "RANGE"}
-                    aria-pressed={direction === "RANGE"}
-                    disabled={!isBettingOpen}
-                    onClick={() => setDirection("RANGE")}
+                    className="range-choice range-choice-range"
+                    data-active={range.direction === "RANGE"}
+                    aria-pressed={range.direction === "RANGE"}
+                    disabled={!range.isBettingOpen}
+                    onClick={() => range.setDirection("RANGE")}
                 >
                     <span>RANGE</span>
-                    <strong>{nextRangeRound.odds}</strong>
+                    <strong>{range.rangeOdds}</strong>
                 </button>
                 <button
                     type="button"
-                    className="range-choice"
-                    data-active={direction === "BREAK"}
-                    aria-pressed={direction === "BREAK"}
-                    disabled={!isBettingOpen}
-                    onClick={() => setDirection("BREAK")}
+                    className="range-choice range-choice-break"
+                    data-active={range.direction === "BREAK"}
+                    aria-pressed={range.direction === "BREAK"}
+                    disabled={!range.isBettingOpen}
+                    onClick={() => range.setDirection("BREAK")}
                 >
                     <span>BREAK</span>
-                    <strong>{nextRangeRound.odds}</strong>
+                    <strong>{range.breakOdds}</strong>
                 </button>
             </fieldset>
             <label className="binary-amount">
@@ -200,12 +205,9 @@ function NextRangeRoundCard({ roundMarket }: { roundMarket: PredictRoundMarket |
                         type="number"
                         min="0"
                         step="1"
-                        value={amount}
-                        disabled={!isBettingOpen}
-                        onChange={(event) => {
-                            setAmount(event.target.value);
-                            setEntryMessage(null);
-                        }}
+                        value={range.amount}
+                        disabled={!range.isBettingOpen}
+                        onChange={(event) => range.setAmount(event.target.value)}
                     />
                     <strong>DUSDC</strong>
                 </div>
@@ -213,13 +215,18 @@ function NextRangeRoundCard({ roundMarket }: { roundMarket: PredictRoundMarket |
             <button
                 type="button"
                 className="binary-enter-button"
-                disabled={!canEnter}
-                onClick={enterNextRound}
+                disabled={!range.canEnter}
+                onClick={() => void range.placeRangeBet()}
             >
-                Enter Next Round
+                Enter Range
             </button>
             <div className="binary-entry-status" aria-live="polite">
-                {entryMessage ?? "Choose RANGE or BREAK for the next five-minute round."}
+                {range.txStatus === "PLACED" &&
+                range.entryDirection &&
+                range.entryOdds &&
+                range.entryCost
+                    ? `${range.entryDirection} PLACED · ${range.entryCost} · Entry ${range.entryOdds}`
+                    : statusMessage}
             </div>
         </section>
     );
@@ -296,7 +303,7 @@ function HistoryTable({ events, title }: { events: EventLog[]; title: string }) 
 
 function HomeContent() {
     const [view, setView] = useState<View>("arena");
-    const { snapshot, preview, error, isLoading } = useDeepArena();
+    const { snapshot, error, isLoading } = useDeepArena();
     const predictRound = usePredictRound();
     const market = useMarketStream(predictRound.market?.currentOracle?.oracleId ?? null);
 
@@ -376,57 +383,7 @@ function HomeContent() {
                     <div className="page-heading">
                         <span>Personal account</span>
                         <h1>Portfolio</h1>
-                        <p>Review your current mock exposure and your own activity.</p>
                     </div>
-                    <div className="portfolio-summary">
-                        <div>
-                            <span>Current score</span>
-                            <strong>
-                                {currentPlayer ? formatAmount(currentPlayer.score) : "Unavailable"}
-                            </strong>
-                        </div>
-                        <div>
-                            <span>Arena rank</span>
-                            <strong>#{currentPlayer?.rank ?? "-"}</strong>
-                        </div>
-                        <div>
-                            <span>Predict manager</span>
-                            <strong>
-                                {currentPlayer ? shortId(currentPlayer.predictManagerId) : "-"}
-                            </strong>
-                        </div>
-                    </div>
-                    <section className="surface positions">
-                        <div className="section-title">
-                            <div>
-                                <span>Current exposure</span>
-                                <h2>Open mock positions</h2>
-                            </div>
-                        </div>
-                        {preview ? (
-                            <div className="position-row">
-                                <span className={`position-kind ${preview.kind}`}>
-                                    {preview.kind}
-                                </span>
-                                <div>
-                                    <strong>{preview.marketLabel}</strong>
-                                    <small>{preview.quantity} units</small>
-                                </div>
-                                <div>
-                                    <span>Cost</span>
-                                    <strong>{formatAmount(preview.estimatedCost)}</strong>
-                                </div>
-                                <div>
-                                    <span>Max payout</span>
-                                    <strong>{formatAmount(preview.estimatedPayout)}</strong>
-                                </div>
-                            </div>
-                        ) : (
-                            <div className="empty-state">
-                                Preview or open a mock position in Arena to display it here.
-                            </div>
-                        )}
-                    </section>
                     <BinaryPortfolioSection roundMarket={predictRound.market} />
                 </section>
             ) : null}

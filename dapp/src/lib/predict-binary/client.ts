@@ -7,9 +7,11 @@ import { type BudgetedTradePreview, findBudgetedTradePreview, type TradeAmounts 
 import {
     type BinaryMarketKeyInput,
     createMintBinaryTransaction,
+    createPreviewRangeTradeAmountsTransaction,
     createPreviewTradeAmountsTransaction,
     createReadBinaryPositionTransaction,
     createReadManagerBalanceTransaction,
+    type RangeKeyInput,
     target,
 } from "./transactions";
 
@@ -112,6 +114,28 @@ export interface RedeemedPositionEvent extends RedeemEvent {
     timestampMs: number | null;
 }
 
+export interface RangeTradePreview {
+    quantity: bigint;
+    mintCost: bigint;
+    redeemPayout: bigint;
+}
+
+export interface RangeMintEvent {
+    predictId: string;
+    managerId: string;
+    trader: string;
+    quoteAssetName: string;
+    oracleId: string;
+    expiryMs: number;
+    lowerStrike: bigint;
+    higherStrike: bigint;
+    quantity: bigint;
+    cost: bigint;
+    askPrice: bigint;
+    digest: string | null;
+    timestampMs: number | null;
+}
+
 interface SimulateClient {
     core: {
         simulateTransaction<
@@ -168,10 +192,25 @@ function normalizeTypeName(value: string): string {
 }
 
 function readQuoteAssetName(value: unknown): string {
+    if (typeof value === "string" && value.length > 0) {
+        return value;
+    }
     if (!isRecord(value)) {
         throw new Error("Invalid quote_asset");
     }
-    return readString(value.name, "quote_asset.name");
+    if (typeof value.name === "string" && value.name.length > 0) {
+        return value.name;
+    }
+    if (typeof value.typeName === "string" && value.typeName.length > 0) {
+        return value.typeName;
+    }
+    if (typeof value.type_name === "string" && value.type_name.length > 0) {
+        return value.type_name;
+    }
+    if (typeof value.type === "string" && value.type.length > 0) {
+        return value.type;
+    }
+    throw new Error("Invalid quote_asset");
 }
 
 function readEventDigest(event: unknown): string | null {
@@ -251,6 +290,14 @@ function decodeU64ReturnValue(value: unknown): bigint {
     return BigInt(bcs.U64.parse(value.bcs));
 }
 
+function decodeU64PairReturnValue(value: unknown): [bigint, bigint] | null {
+    if (!isRecord(value) || !(value.bcs instanceof Uint8Array) || value.bcs.length !== 16) {
+        return null;
+    }
+    const view = new DataView(value.bcs.buffer, value.bcs.byteOffset, value.bcs.byteLength);
+    return [view.getBigUint64(0, true), view.getBigUint64(8, true)];
+}
+
 function decodeTradeAmountReturns(
     result: SuiClientTypes.SimulateTransactionResult<{ commandResults: true }>,
 ): { mintCost: bigint; redeemPayout: bigint; decodedReturnValues: bigint[] } {
@@ -263,6 +310,12 @@ function decodeTradeAmountReturns(
         .find((command) => readCommandReturnValues(command).length > 0);
     const returnValues = readCommandReturnValues(lastCommandWithReturns);
     if (returnValues.length < 2) {
+        const tupleValues =
+            returnValues.length === 1 ? decodeU64PairReturnValue(returnValues[0]) : null;
+        if (tupleValues) {
+            const [mintCost, redeemPayout] = tupleValues;
+            return { mintCost, redeemPayout, decodedReturnValues: tupleValues };
+        }
         throw new Error("Trade preview returned fewer than two values");
     }
     const decodedReturnValues = returnValues.map(decodeU64ReturnValue);
@@ -617,6 +670,46 @@ export async function previewTradeAmountsServerOnly(
     },
 ): Promise<TradeAmounts> {
     return (await previewTradeAmountsWithDebug(client, input)).amounts;
+}
+
+export async function previewRangeTradeAmountsServerOnly(
+    client: SimulateClient,
+    input: RangeKeyInput & {
+        sender: string;
+        quantity: bigint;
+    },
+): Promise<TradeAmounts> {
+    const result = await client.core.simulateTransaction({
+        transaction: createPreviewRangeTradeAmountsTransaction(input),
+        checksEnabled: false,
+        include: { commandResults: true },
+    });
+    const { mintCost, redeemPayout } = decodeTradeAmountReturns(result);
+    return { mintCost, redeemPayout };
+}
+
+export async function previewRangeWithinBudgetServerOnly({
+    client,
+    budget,
+    ...input
+}: RangeKeyInput & {
+    client: SimulateClient;
+    sender: string;
+    budget: bigint;
+}): Promise<RangeTradePreview> {
+    const preview = await findBudgetedTradePreview({
+        budget,
+        preview: (quantity) =>
+            previewRangeTradeAmountsServerOnly(client, {
+                ...input,
+                quantity,
+            }),
+    });
+    return {
+        quantity: preview.quantity,
+        mintCost: preview.mintCost,
+        redeemPayout: preview.redeemPayout,
+    };
 }
 
 export async function previewTradeWithinBudgetServerOnly({
@@ -1009,17 +1102,24 @@ export async function findPredictManager(owner: string): Promise<string | null> 
     return null;
 }
 
-export function readManagerCreatedEvent(events: SuiClientTypes.Event[] | undefined): string | null {
-    const event = events?.find(
-        (item) =>
+export function readManagerCreatedEvent(events: unknown[] | undefined): string | null {
+    const event = events?.find((item) => {
+        if (!isRecord(item)) {
+            return false;
+        }
+        return (
             item.eventType ===
-            `${PREDICT_BINARY_CONFIG.packageId}::predict_manager::PredictManagerCreated`,
-    );
+                `${PREDICT_BINARY_CONFIG.packageId}::predict_manager::PredictManagerCreated` ||
+            item.type ===
+                `${PREDICT_BINARY_CONFIG.packageId}::predict_manager::PredictManagerCreated`
+        );
+    });
     const payload = readSuiEventPayload(event);
     return payload ? readString(payload.manager_id, "manager_id") : null;
 }
 
 export const POSITION_MINTED_EVENT_TYPE = `${PREDICT_BINARY_CONFIG.packageId}::predict::PositionMinted`;
+export const RANGE_MINTED_EVENT_TYPE = `${PREDICT_BINARY_CONFIG.packageId}::predict::RangeMinted`;
 
 export function findMintEvent(events: unknown[] | undefined): unknown | null {
     return (
@@ -1070,6 +1170,42 @@ export function readPositionMintedEvent(event: unknown): MintedPositionEvent {
         askPrice: readBigInt(payload.ask_price, "ask_price"),
         digest: readEventDigest(event),
         timestampMs: readEventTimestampMs(event),
+    };
+}
+
+export function findRangeMintedEvent(events: unknown[] | undefined): unknown | null {
+    return (
+        events?.find((item) => {
+            if (!isRecord(item)) {
+                return false;
+            }
+            return (
+                item.eventType === RANGE_MINTED_EVENT_TYPE || item.type === RANGE_MINTED_EVENT_TYPE
+            );
+        }) ?? null
+    );
+}
+
+export function readRangeMintedEvent(events: unknown[] | undefined): RangeMintEvent {
+    const payloadEvent = findRangeMintedEvent(events);
+    const payload = readSuiEventPayload(payloadEvent);
+    if (!payload) {
+        throw new Error("RangeMinted event was not found");
+    }
+    return {
+        predictId: readString(payload.predict_id, "predict_id"),
+        managerId: readString(payload.manager_id, "manager_id"),
+        trader: readString(payload.trader, "trader"),
+        quoteAssetName: readQuoteAssetName(payload.quote_asset),
+        oracleId: readString(payload.oracle_id, "oracle_id"),
+        expiryMs: Number(readBigInt(payload.expiry, "expiry")),
+        lowerStrike: readBigInt(payload.lower_strike, "lower_strike"),
+        higherStrike: readBigInt(payload.higher_strike, "higher_strike"),
+        quantity: readBigInt(payload.quantity, "quantity"),
+        cost: readBigInt(payload.cost, "cost"),
+        askPrice: readBigInt(payload.ask_price, "ask_price"),
+        digest: readEventDigest(payloadEvent),
+        timestampMs: readEventTimestampMs(payloadEvent),
     };
 }
 
@@ -1185,6 +1321,46 @@ export async function queryWalletPositionMintedEvents({
         let minted: MintedPositionEvent;
         try {
             minted = readPositionMintedEvent(event);
+        } catch {
+            continue;
+        }
+        if (
+            minted.trader.toLowerCase() !== trader.toLowerCase() ||
+            minted.predictId !== predictId ||
+            normalizeTypeName(minted.quoteAssetName) !== normalizeTypeName(quoteCoinType) ||
+            minted.cost <= 0n ||
+            minted.quantity <= 0n
+        ) {
+            continue;
+        }
+        events.push(minted);
+    }
+    return { events, pagesRead: queried.pagesRead, reachedLimit: queried.reachedLimit };
+}
+
+export async function queryWalletRangeMintedEvents({
+    trader,
+    predictId,
+    quoteCoinType,
+    maxPages = 40,
+    pageSize = 50,
+}: {
+    trader: string;
+    predictId: string;
+    quoteCoinType: string;
+    maxPages?: number;
+    pageSize?: number;
+}): Promise<{ events: RangeMintEvent[]; pagesRead: number; reachedLimit: boolean }> {
+    const queried = await queryMoveEvents({
+        eventType: RANGE_MINTED_EVENT_TYPE,
+        maxPages,
+        pageSize,
+    });
+    const events: RangeMintEvent[] = [];
+    for (const event of queried.events) {
+        let minted: RangeMintEvent;
+        try {
+            minted = readRangeMintedEvent([event]);
         } catch {
             continue;
         }

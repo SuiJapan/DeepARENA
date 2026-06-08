@@ -12,6 +12,8 @@
     --coral-soft: #fff0ec;
     --blue: #267d91;
     --blue-soft: #eaf5f7;
+    --amber: #a16610;
+    --amber-soft: #fff5e5;
     --font-sans: Arial, Helvetica, sans-serif;
     --font-mono: "Courier New", Courier, monospace;
 }
@@ -636,10 +638,28 @@ button:disabled {
     color: var(--ink);
 }
 
-.range-choice[data-active="true"] {
+.direction-picker button.range-choice-range {
+    color: var(--blue);
+    background: var(--blue-soft);
+    border-color: color-mix(in srgb, var(--blue) 40%, var(--line));
+}
+
+.direction-picker button.range-choice-break {
+    color: var(--amber);
+    background: var(--amber-soft);
+    border-color: color-mix(in srgb, var(--amber) 38%, var(--line));
+}
+
+.direction-picker button.range-choice-range[data-active="true"] {
     color: white;
-    background: var(--green);
-    border-color: var(--green);
+    background: var(--blue);
+    border-color: var(--blue);
+}
+
+.direction-picker button.range-choice-break[data-active="true"] {
+    color: white;
+    background: var(--amber);
+    border-color: var(--amber);
 }
 
 .trade-card.plp-card {
@@ -1395,6 +1415,14 @@ button:disabled {
 
 .binary-side.down {
     background: var(--coral);
+}
+
+.binary-side.range {
+    background: var(--blue);
+}
+
+.binary-side.break {
+    background: var(--amber);
 }
 
 .binary-portfolio-note {
