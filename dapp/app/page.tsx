@@ -5,6 +5,7 @@ import { useDeepArena } from "@/src/features/deep-arena/use-deep-arena";
 import { MarketChart } from "@/src/features/market/market-chart";
 import { useMarketStream } from "@/src/features/market/use-market-stream";
 import { PlpSandboxPanel } from "@/src/features/plp-sandbox/plp-sandbox-panel";
+import { BinaryPortfolioSection } from "@/src/features/predict-binary/binary-portfolio-section";
 import { PredictBinaryCard } from "@/src/features/predict-binary/predict-binary-card";
 import {
     type PredictRoundMarket,
@@ -309,7 +310,6 @@ function HomeContent() {
     }
 
     const { players, events } = snapshot;
-    const ownEvents = events.filter(({ actor }) => actor === currentPlayer?.address);
 
     return (
         <main className="app-shell">
@@ -427,7 +427,7 @@ function HomeContent() {
                             </div>
                         )}
                     </section>
-                    <HistoryTable events={ownEvents} title="Your history" />
+                    <BinaryPortfolioSection roundMarket={predictRound.market} />
                 </section>
             ) : null}
 

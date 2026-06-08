@@ -191,6 +191,58 @@ export function createRedeemBinaryTransaction(input: RedeemBinaryTransactionInpu
     return tx;
 }
 
+export function createClaimBinaryPayoutTransaction(
+    input: RedeemBinaryTransactionInput,
+): Transaction {
+    const tx = new Transaction();
+    tx.setSender(input.sender);
+    const key = addMarketKey(tx, input);
+    tx.moveCall({
+        target: target("predict", "redeem_permissionless"),
+        typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+        arguments: [
+            tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
+            tx.object(input.managerId),
+            tx.object(input.oracleId),
+            key,
+            tx.pure.u64(input.quantity),
+            tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
+        ],
+    });
+    const coin = tx.moveCall({
+        target: target("predict_manager", "withdraw"),
+        typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+        arguments: [tx.object(input.managerId), tx.pure.u64(input.quantity)],
+    });
+    tx.transferObjects([coin], input.sender);
+    return tx;
+}
+
+export function describeClaimBinaryPayoutMoveCalls(): MoveCallSummary[] {
+    return [
+        {
+            target: target("market_key", "new"),
+            typeArguments: [],
+            purpose: "build Binary MarketKey",
+        },
+        {
+            target: target("predict", "redeem_permissionless"),
+            typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+            purpose: "redeem winning Binary position into PredictManager balance",
+        },
+        {
+            target: target("predict_manager", "withdraw"),
+            typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+            purpose: "withdraw redeemed DUSDC from PredictManager",
+        },
+        {
+            target: "transferObjects",
+            typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+            purpose: "transfer withdrawn DUSDC to wallet",
+        },
+    ];
+}
+
 export function createWithdrawManagerQuoteTransaction({
     sender,
     managerId,

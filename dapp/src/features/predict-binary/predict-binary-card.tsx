@@ -15,9 +15,11 @@ export function PredictBinaryCard({
 }) {
     const binary = usePredictBinary(roundMarket, spotTimestampMs);
     const [direction, setDirection] = useState<BinaryDirection | null>(null);
-    const canEnter = binary.canTrade && direction !== null && binary.amount.trim().length > 0;
+    const canEnter =
+        direction === "UP" ? binary.canBetUp : direction === "DOWN" ? binary.canBetDown : false;
     const isBettingOpen = roundMarket?.state === "BETTING_OPEN";
     const hasActiveRound = Boolean(roundMarket?.currentOracle && roundMarket.round);
+    const hasSidePosition = Boolean(binary.sidePositionLabels.UP || binary.sidePositionLabels.DOWN);
     const countdownTitle = isBettingOpen ? "BETTING CLOSES IN" : "SETTLES IN";
     const inactiveTitle =
         roundMarket?.state === "LOCKING_ROUND"
@@ -66,6 +68,32 @@ export function PredictBinaryCard({
                     <span>DOWN</span>
                     <strong>{binary.downOdds}</strong>
                 </button>
+                {hasSidePosition ? (
+                    <>
+                        {binary.sidePositionLabels.UP ? (
+                            <div className="binary-position-chip position-up">
+                                <span>YOUR BET</span>
+                                <strong>{binary.sidePositionLabels.UP.bet}</strong>
+                                {binary.sidePositionLabels.UP.entryOdds ? (
+                                    <em>Entry {binary.sidePositionLabels.UP.entryOdds}</em>
+                                ) : null}
+                            </div>
+                        ) : (
+                            <div className="binary-position-chip position-empty" aria-hidden />
+                        )}
+                        {binary.sidePositionLabels.DOWN ? (
+                            <div className="binary-position-chip position-down">
+                                <span>YOUR BET</span>
+                                <strong>{binary.sidePositionLabels.DOWN.bet}</strong>
+                                {binary.sidePositionLabels.DOWN.entryOdds ? (
+                                    <em>Entry {binary.sidePositionLabels.DOWN.entryOdds}</em>
+                                ) : null}
+                            </div>
+                        ) : (
+                            <div className="binary-position-chip position-empty" aria-hidden />
+                        )}
+                    </>
+                ) : null}
             </fieldset>
 
             <label className="binary-amount">
@@ -115,6 +143,12 @@ export function PredictBinaryCard({
                     </>
                 ) : null}
                 {binary.txStatus === "FAILED" ? <span>{binary.message}</span> : null}
+                {binary.txStatus !== "FAILED" &&
+                direction &&
+                !canEnter &&
+                binary.oddsUnavailableLabel ? (
+                    <span>{binary.oddsUnavailableLabel}</span>
+                ) : null}
                 {binary.explorerUrl ? (
                     <a href={binary.explorerUrl} target="_blank" rel="noreferrer">
                         View transaction

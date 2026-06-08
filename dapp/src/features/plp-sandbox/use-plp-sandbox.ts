@@ -19,6 +19,7 @@ import {
     plpSandboxExplorerUrl,
 } from "@/src/lib/plp-sandbox/config";
 import { createPlpSandboxTransaction } from "@/src/lib/plp-sandbox/transactions";
+import { isWalletUserRejection, readWalletCancellationDebug } from "@/src/lib/wallet-errors";
 
 type PlpSandboxStatus = "idle" | "loading" | "success" | "error";
 
@@ -71,9 +72,8 @@ function readTransactionDigest(result: unknown): string {
 }
 
 function classifyTransactionError(caught: unknown, fallback: string): string {
-    const message = readErrorMessage(caught).toLowerCase();
-    if (message.includes("reject") || message.includes("denied") || message.includes("cancel")) {
-        return "Transaction was rejected";
+    if (isWalletUserRejection(caught)) {
+        return "Transaction cancelled";
     }
     return fallback;
 }
@@ -210,6 +210,15 @@ export function usePlpSandbox() {
                     setBalanceError("Balance refresh failed");
                 }
             } catch (caught) {
+                if (isWalletUserRejection(caught)) {
+                    console.info(
+                        "PLP sandbox transaction cancelled",
+                        readWalletCancellationDebug(caught),
+                    );
+                    setStatus("idle");
+                    setResult({ message: "Transaction cancelled" });
+                    return;
+                }
                 console.error("PLP sandbox transaction failed:", caught);
                 setStatus("error");
                 setResult({

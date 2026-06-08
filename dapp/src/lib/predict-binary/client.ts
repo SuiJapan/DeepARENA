@@ -77,6 +77,7 @@ export class TradePreviewError extends Error {
 }
 
 export interface MintEvent {
+    predictId: string;
     managerId: string;
     oracleId: string;
     expiryMs: number;
@@ -85,6 +86,13 @@ export interface MintEvent {
     quantity: bigint;
     cost: bigint;
     askPrice: bigint;
+}
+
+export interface MintedPositionEvent extends MintEvent {
+    trader: string;
+    quoteAssetName: string;
+    digest: string | null;
+    timestampMs: number | null;
 }
 
 export interface RedeemEvent {
@@ -97,6 +105,11 @@ export interface RedeemEvent {
     payout: bigint;
     bidPrice: bigint;
     isSettled: boolean;
+}
+
+export interface RedeemedPositionEvent extends RedeemEvent {
+    digest: string | null;
+    timestampMs: number | null;
 }
 
 interface SimulateClient {
@@ -144,6 +157,47 @@ function readBoolean(value: unknown, fieldName: string): boolean {
         throw new Error(`Invalid ${fieldName}`);
     }
     return value;
+}
+
+function readOptionalString(value: unknown): string | null {
+    return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function normalizeTypeName(value: string): string {
+    return value.toLowerCase().replace(/^0x/, "");
+}
+
+function readQuoteAssetName(value: unknown): string {
+    if (!isRecord(value)) {
+        throw new Error("Invalid quote_asset");
+    }
+    return readString(value.name, "quote_asset.name");
+}
+
+function readEventDigest(event: unknown): string | null {
+    if (!isRecord(event)) {
+        return null;
+    }
+    const id = event.id;
+    if (isRecord(id)) {
+        return readOptionalString(id.txDigest);
+    }
+    return readOptionalString(event.txDigest) ?? readOptionalString(event.digest);
+}
+
+function readEventTimestampMs(event: unknown): number | null {
+    if (!isRecord(event)) {
+        return null;
+    }
+    const value = event.timestampMs;
+    if (typeof value === "number" && Number.isSafeInteger(value)) {
+        return value;
+    }
+    if (typeof value === "string" && /^(0|[1-9]\d*)$/.test(value)) {
+        const parsed = Number(value);
+        return Number.isSafeInteger(parsed) ? parsed : null;
+    }
+    return null;
 }
 
 function readTransactionDigest(result: unknown): string {
@@ -965,22 +1019,195 @@ export function readManagerCreatedEvent(events: SuiClientTypes.Event[] | undefin
     return payload ? readString(payload.manager_id, "manager_id") : null;
 }
 
-export function findMintEvent(
-    events: SuiClientTypes.Event[] | undefined,
-): SuiClientTypes.Event | null {
+export const POSITION_MINTED_EVENT_TYPE = `${PREDICT_BINARY_CONFIG.packageId}::predict::PositionMinted`;
+
+export function findMintEvent(events: unknown[] | undefined): unknown | null {
     return (
-        events?.find(
-            (item) =>
-                item.eventType === `${PREDICT_BINARY_CONFIG.packageId}::predict::PositionMinted`,
-        ) ?? null
+        events?.find((item) => {
+            if (!isRecord(item)) {
+                return false;
+            }
+            if (item.eventType === POSITION_MINTED_EVENT_TYPE) {
+                return true;
+            }
+            return item.type === POSITION_MINTED_EVENT_TYPE;
+        }) ?? null
     );
 }
 
-export function readMintEvent(events: SuiClientTypes.Event[] | undefined): MintEvent {
+export function readMintEvent(events: unknown[] | undefined): MintEvent {
     const event = findMintEvent(events);
+    const minted = readPositionMintedEvent(event);
+    return {
+        predictId: minted.predictId,
+        managerId: minted.managerId,
+        oracleId: minted.oracleId,
+        expiryMs: minted.expiryMs,
+        strike: minted.strike,
+        isUp: minted.isUp,
+        quantity: minted.quantity,
+        cost: minted.cost,
+        askPrice: minted.askPrice,
+    };
+}
+
+export function readPositionMintedEvent(event: unknown): MintedPositionEvent {
     const payload = readSuiEventPayload(event);
     if (!payload) {
         throw new Error("PositionMinted event was not found");
+    }
+    return {
+        predictId: readString(payload.predict_id, "predict_id"),
+        managerId: readString(payload.manager_id, "manager_id"),
+        trader: readString(payload.trader, "trader"),
+        quoteAssetName: readQuoteAssetName(payload.quote_asset),
+        oracleId: readString(payload.oracle_id, "oracle_id"),
+        expiryMs: Number(readBigInt(payload.expiry, "expiry")),
+        strike: readBigInt(payload.strike, "strike"),
+        isUp: readBoolean(payload.is_up, "is_up"),
+        quantity: readBigInt(payload.quantity, "quantity"),
+        cost: readBigInt(payload.cost, "cost"),
+        askPrice: readBigInt(payload.ask_price, "ask_price"),
+        digest: readEventDigest(event),
+        timestampMs: readEventTimestampMs(event),
+    };
+}
+
+interface QueryMoveEventsOptions {
+    eventType: string;
+    maxPages: number;
+    pageSize: number;
+}
+
+async function queryMoveEvents({ eventType, maxPages, pageSize }: QueryMoveEventsOptions): Promise<{
+    events: unknown[];
+    pagesRead: number;
+    reachedLimit: boolean;
+}> {
+    const events: unknown[] = [];
+    let cursor: unknown = null;
+    for (let page = 0; page < maxPages; page += 1) {
+        const response = await fetch(PREDICT_BINARY_CONFIG.fullnodeJsonRpcUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+                jsonrpc: "2.0",
+                id: page + 1,
+                method: "suix_queryEvents",
+                params: [{ MoveEventType: eventType }, cursor, pageSize, true],
+            }),
+        });
+        if (!response.ok) {
+            throw new Error(`Event query failed for ${eventType}: ${response.status}`);
+        }
+        const payload = (await response.json()) as unknown;
+        if (
+            !isRecord(payload) ||
+            !isRecord(payload.result) ||
+            !Array.isArray(payload.result.data)
+        ) {
+            throw new Error(`Invalid event query response for ${eventType}`);
+        }
+        events.push(...payload.result.data);
+        if (payload.result.hasNextPage !== true) {
+            return { events, pagesRead: page + 1, reachedLimit: false };
+        }
+        cursor = payload.result.nextCursor;
+    }
+    return { events, pagesRead: maxPages, reachedLimit: true };
+}
+
+export async function queryPositionMintedEvents({
+    trader,
+    predictId,
+    oracleId,
+    expiryMs,
+    strike,
+    quoteCoinType,
+}: {
+    trader: string;
+    predictId: string;
+    oracleId: string;
+    expiryMs: number;
+    strike: bigint;
+    quoteCoinType: string;
+}): Promise<MintedPositionEvent[]> {
+    const matches: MintedPositionEvent[] = [];
+    const queried = await queryMoveEvents({
+        eventType: POSITION_MINTED_EVENT_TYPE,
+        maxPages: 20,
+        pageSize: 50,
+    });
+    for (const event of queried.events) {
+        let minted: MintedPositionEvent;
+        try {
+            minted = readPositionMintedEvent(event);
+        } catch {
+            continue;
+        }
+        if (
+            minted.trader.toLowerCase() !== trader.toLowerCase() ||
+            minted.predictId !== predictId ||
+            minted.oracleId !== oracleId ||
+            minted.expiryMs !== expiryMs ||
+            minted.strike !== strike ||
+            normalizeTypeName(minted.quoteAssetName) !== normalizeTypeName(quoteCoinType) ||
+            minted.cost <= 0n ||
+            minted.quantity <= 0n
+        ) {
+            continue;
+        }
+        matches.push(minted);
+    }
+    return matches;
+}
+
+export async function queryWalletPositionMintedEvents({
+    trader,
+    predictId,
+    quoteCoinType,
+    maxPages = 40,
+    pageSize = 50,
+}: {
+    trader: string;
+    predictId: string;
+    quoteCoinType: string;
+    maxPages?: number;
+    pageSize?: number;
+}): Promise<{ events: MintedPositionEvent[]; pagesRead: number; reachedLimit: boolean }> {
+    const queried = await queryMoveEvents({
+        eventType: POSITION_MINTED_EVENT_TYPE,
+        maxPages,
+        pageSize,
+    });
+    const events: MintedPositionEvent[] = [];
+    for (const event of queried.events) {
+        let minted: MintedPositionEvent;
+        try {
+            minted = readPositionMintedEvent(event);
+        } catch {
+            continue;
+        }
+        if (
+            minted.trader.toLowerCase() !== trader.toLowerCase() ||
+            minted.predictId !== predictId ||
+            normalizeTypeName(minted.quoteAssetName) !== normalizeTypeName(quoteCoinType) ||
+            minted.cost <= 0n ||
+            minted.quantity <= 0n
+        ) {
+            continue;
+        }
+        events.push(minted);
+    }
+    return { events, pagesRead: queried.pagesRead, reachedLimit: queried.reachedLimit };
+}
+
+export const POSITION_REDEEMED_EVENT_TYPE = `${PREDICT_BINARY_CONFIG.packageId}::predict::PositionRedeemed`;
+
+export function readPositionRedeemedEvent(event: unknown): RedeemedPositionEvent {
+    const payload = readSuiEventPayload(event);
+    if (!payload) {
+        throw new Error("PositionRedeemed event was not found");
     }
     return {
         managerId: readString(payload.manager_id, "manager_id"),
@@ -989,9 +1216,42 @@ export function readMintEvent(events: SuiClientTypes.Event[] | undefined): MintE
         strike: readBigInt(payload.strike, "strike"),
         isUp: readBoolean(payload.is_up, "is_up"),
         quantity: readBigInt(payload.quantity, "quantity"),
-        cost: readBigInt(payload.cost, "cost"),
-        askPrice: readBigInt(payload.ask_price, "ask_price"),
+        payout: readBigInt(payload.payout, "payout"),
+        bidPrice: readBigInt(payload.bid_price, "bid_price"),
+        isSettled: readBoolean(payload.is_settled, "is_settled"),
+        digest: readEventDigest(event),
+        timestampMs: readEventTimestampMs(event),
     };
+}
+
+export async function queryManagerPositionRedeemedEvents({
+    managerId,
+    maxPages = 40,
+    pageSize = 50,
+}: {
+    managerId: string;
+    maxPages?: number;
+    pageSize?: number;
+}): Promise<{ events: RedeemedPositionEvent[]; pagesRead: number; reachedLimit: boolean }> {
+    const queried = await queryMoveEvents({
+        eventType: POSITION_REDEEMED_EVENT_TYPE,
+        maxPages,
+        pageSize,
+    });
+    const events: RedeemedPositionEvent[] = [];
+    for (const event of queried.events) {
+        let redeemed: RedeemedPositionEvent;
+        try {
+            redeemed = readPositionRedeemedEvent(event);
+        } catch {
+            continue;
+        }
+        if (redeemed.managerId !== managerId) {
+            continue;
+        }
+        events.push(redeemed);
+    }
+    return { events, pagesRead: queried.pagesRead, reachedLimit: queried.reachedLimit };
 }
 
 export function readRedeemEvent(events: SuiClientTypes.Event[] | undefined): RedeemEvent {
