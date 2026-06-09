@@ -7,9 +7,11 @@ import { type BudgetedTradePreview, findBudgetedTradePreview, type TradeAmounts 
 import {
     type BinaryMarketKeyInput,
     createMintBinaryTransaction,
+    createPreviewRangeTradeAmountsTransaction,
     createPreviewTradeAmountsTransaction,
     createReadBinaryPositionTransaction,
     createReadManagerBalanceTransaction,
+    type RangeKeyInput,
     target,
 } from "./transactions";
 
@@ -77,6 +79,7 @@ export class TradePreviewError extends Error {
 }
 
 export interface MintEvent {
+    predictId: string;
     managerId: string;
     oracleId: string;
     expiryMs: number;
@@ -85,6 +88,13 @@ export interface MintEvent {
     quantity: bigint;
     cost: bigint;
     askPrice: bigint;
+}
+
+export interface MintedPositionEvent extends MintEvent {
+    trader: string;
+    quoteAssetName: string;
+    digest: string | null;
+    timestampMs: number | null;
 }
 
 export interface RedeemEvent {
@@ -97,6 +107,33 @@ export interface RedeemEvent {
     payout: bigint;
     bidPrice: bigint;
     isSettled: boolean;
+}
+
+export interface RedeemedPositionEvent extends RedeemEvent {
+    digest: string | null;
+    timestampMs: number | null;
+}
+
+export interface RangeTradePreview {
+    quantity: bigint;
+    mintCost: bigint;
+    redeemPayout: bigint;
+}
+
+export interface RangeMintEvent {
+    predictId: string;
+    managerId: string;
+    trader: string;
+    quoteAssetName: string;
+    oracleId: string;
+    expiryMs: number;
+    lowerStrike: bigint;
+    higherStrike: bigint;
+    quantity: bigint;
+    cost: bigint;
+    askPrice: bigint;
+    digest: string | null;
+    timestampMs: number | null;
 }
 
 interface SimulateClient {
@@ -144,6 +181,62 @@ function readBoolean(value: unknown, fieldName: string): boolean {
         throw new Error(`Invalid ${fieldName}`);
     }
     return value;
+}
+
+function readOptionalString(value: unknown): string | null {
+    return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function normalizeTypeName(value: string): string {
+    return value.toLowerCase().replace(/^0x/, "");
+}
+
+function readQuoteAssetName(value: unknown): string {
+    if (typeof value === "string" && value.length > 0) {
+        return value;
+    }
+    if (!isRecord(value)) {
+        throw new Error("Invalid quote_asset");
+    }
+    if (typeof value.name === "string" && value.name.length > 0) {
+        return value.name;
+    }
+    if (typeof value.typeName === "string" && value.typeName.length > 0) {
+        return value.typeName;
+    }
+    if (typeof value.type_name === "string" && value.type_name.length > 0) {
+        return value.type_name;
+    }
+    if (typeof value.type === "string" && value.type.length > 0) {
+        return value.type;
+    }
+    throw new Error("Invalid quote_asset");
+}
+
+function readEventDigest(event: unknown): string | null {
+    if (!isRecord(event)) {
+        return null;
+    }
+    const id = event.id;
+    if (isRecord(id)) {
+        return readOptionalString(id.txDigest);
+    }
+    return readOptionalString(event.txDigest) ?? readOptionalString(event.digest);
+}
+
+function readEventTimestampMs(event: unknown): number | null {
+    if (!isRecord(event)) {
+        return null;
+    }
+    const value = event.timestampMs;
+    if (typeof value === "number" && Number.isSafeInteger(value)) {
+        return value;
+    }
+    if (typeof value === "string" && /^(0|[1-9]\d*)$/.test(value)) {
+        const parsed = Number(value);
+        return Number.isSafeInteger(parsed) ? parsed : null;
+    }
+    return null;
 }
 
 function readTransactionDigest(result: unknown): string {
@@ -197,6 +290,14 @@ function decodeU64ReturnValue(value: unknown): bigint {
     return BigInt(bcs.U64.parse(value.bcs));
 }
 
+function decodeU64PairReturnValue(value: unknown): [bigint, bigint] | null {
+    if (!isRecord(value) || !(value.bcs instanceof Uint8Array) || value.bcs.length !== 16) {
+        return null;
+    }
+    const view = new DataView(value.bcs.buffer, value.bcs.byteOffset, value.bcs.byteLength);
+    return [view.getBigUint64(0, true), view.getBigUint64(8, true)];
+}
+
 function decodeTradeAmountReturns(
     result: SuiClientTypes.SimulateTransactionResult<{ commandResults: true }>,
 ): { mintCost: bigint; redeemPayout: bigint; decodedReturnValues: bigint[] } {
@@ -209,6 +310,12 @@ function decodeTradeAmountReturns(
         .find((command) => readCommandReturnValues(command).length > 0);
     const returnValues = readCommandReturnValues(lastCommandWithReturns);
     if (returnValues.length < 2) {
+        const tupleValues =
+            returnValues.length === 1 ? decodeU64PairReturnValue(returnValues[0]) : null;
+        if (tupleValues) {
+            const [mintCost, redeemPayout] = tupleValues;
+            return { mintCost, redeemPayout, decodedReturnValues: tupleValues };
+        }
         throw new Error("Trade preview returned fewer than two values");
     }
     const decodedReturnValues = returnValues.map(decodeU64ReturnValue);
@@ -563,6 +670,46 @@ export async function previewTradeAmountsServerOnly(
     },
 ): Promise<TradeAmounts> {
     return (await previewTradeAmountsWithDebug(client, input)).amounts;
+}
+
+export async function previewRangeTradeAmountsServerOnly(
+    client: SimulateClient,
+    input: RangeKeyInput & {
+        sender: string;
+        quantity: bigint;
+    },
+): Promise<TradeAmounts> {
+    const result = await client.core.simulateTransaction({
+        transaction: createPreviewRangeTradeAmountsTransaction(input),
+        checksEnabled: false,
+        include: { commandResults: true },
+    });
+    const { mintCost, redeemPayout } = decodeTradeAmountReturns(result);
+    return { mintCost, redeemPayout };
+}
+
+export async function previewRangeWithinBudgetServerOnly({
+    client,
+    budget,
+    ...input
+}: RangeKeyInput & {
+    client: SimulateClient;
+    sender: string;
+    budget: bigint;
+}): Promise<RangeTradePreview> {
+    const preview = await findBudgetedTradePreview({
+        budget,
+        preview: (quantity) =>
+            previewRangeTradeAmountsServerOnly(client, {
+                ...input,
+                quantity,
+            }),
+    });
+    return {
+        quantity: preview.quantity,
+        mintCost: preview.mintCost,
+        redeemPayout: preview.redeemPayout,
+    };
 }
 
 export async function previewTradeWithinBudgetServerOnly({
@@ -955,32 +1102,288 @@ export async function findPredictManager(owner: string): Promise<string | null> 
     return null;
 }
 
-export function readManagerCreatedEvent(events: SuiClientTypes.Event[] | undefined): string | null {
-    const event = events?.find(
-        (item) =>
+export function readManagerCreatedEvent(events: unknown[] | undefined): string | null {
+    const event = events?.find((item) => {
+        if (!isRecord(item)) {
+            return false;
+        }
+        return (
             item.eventType ===
-            `${PREDICT_BINARY_CONFIG.packageId}::predict_manager::PredictManagerCreated`,
-    );
+                `${PREDICT_BINARY_CONFIG.packageId}::predict_manager::PredictManagerCreated` ||
+            item.type ===
+                `${PREDICT_BINARY_CONFIG.packageId}::predict_manager::PredictManagerCreated`
+        );
+    });
     const payload = readSuiEventPayload(event);
     return payload ? readString(payload.manager_id, "manager_id") : null;
 }
 
-export function findMintEvent(
-    events: SuiClientTypes.Event[] | undefined,
-): SuiClientTypes.Event | null {
+export const POSITION_MINTED_EVENT_TYPE = `${PREDICT_BINARY_CONFIG.packageId}::predict::PositionMinted`;
+export const RANGE_MINTED_EVENT_TYPE = `${PREDICT_BINARY_CONFIG.packageId}::predict::RangeMinted`;
+
+export function findMintEvent(events: unknown[] | undefined): unknown | null {
     return (
-        events?.find(
-            (item) =>
-                item.eventType === `${PREDICT_BINARY_CONFIG.packageId}::predict::PositionMinted`,
-        ) ?? null
+        events?.find((item) => {
+            if (!isRecord(item)) {
+                return false;
+            }
+            if (item.eventType === POSITION_MINTED_EVENT_TYPE) {
+                return true;
+            }
+            return item.type === POSITION_MINTED_EVENT_TYPE;
+        }) ?? null
     );
 }
 
-export function readMintEvent(events: SuiClientTypes.Event[] | undefined): MintEvent {
+export function readMintEvent(events: unknown[] | undefined): MintEvent {
     const event = findMintEvent(events);
+    const minted = readPositionMintedEvent(event);
+    return {
+        predictId: minted.predictId,
+        managerId: minted.managerId,
+        oracleId: minted.oracleId,
+        expiryMs: minted.expiryMs,
+        strike: minted.strike,
+        isUp: minted.isUp,
+        quantity: minted.quantity,
+        cost: minted.cost,
+        askPrice: minted.askPrice,
+    };
+}
+
+export function readPositionMintedEvent(event: unknown): MintedPositionEvent {
     const payload = readSuiEventPayload(event);
     if (!payload) {
         throw new Error("PositionMinted event was not found");
+    }
+    return {
+        predictId: readString(payload.predict_id, "predict_id"),
+        managerId: readString(payload.manager_id, "manager_id"),
+        trader: readString(payload.trader, "trader"),
+        quoteAssetName: readQuoteAssetName(payload.quote_asset),
+        oracleId: readString(payload.oracle_id, "oracle_id"),
+        expiryMs: Number(readBigInt(payload.expiry, "expiry")),
+        strike: readBigInt(payload.strike, "strike"),
+        isUp: readBoolean(payload.is_up, "is_up"),
+        quantity: readBigInt(payload.quantity, "quantity"),
+        cost: readBigInt(payload.cost, "cost"),
+        askPrice: readBigInt(payload.ask_price, "ask_price"),
+        digest: readEventDigest(event),
+        timestampMs: readEventTimestampMs(event),
+    };
+}
+
+export function findRangeMintedEvent(events: unknown[] | undefined): unknown | null {
+    return (
+        events?.find((item) => {
+            if (!isRecord(item)) {
+                return false;
+            }
+            return (
+                item.eventType === RANGE_MINTED_EVENT_TYPE || item.type === RANGE_MINTED_EVENT_TYPE
+            );
+        }) ?? null
+    );
+}
+
+export function readRangeMintedEvent(events: unknown[] | undefined): RangeMintEvent {
+    const payloadEvent = findRangeMintedEvent(events);
+    const payload = readSuiEventPayload(payloadEvent);
+    if (!payload) {
+        throw new Error("RangeMinted event was not found");
+    }
+    return {
+        predictId: readString(payload.predict_id, "predict_id"),
+        managerId: readString(payload.manager_id, "manager_id"),
+        trader: readString(payload.trader, "trader"),
+        quoteAssetName: readQuoteAssetName(payload.quote_asset),
+        oracleId: readString(payload.oracle_id, "oracle_id"),
+        expiryMs: Number(readBigInt(payload.expiry, "expiry")),
+        lowerStrike: readBigInt(payload.lower_strike, "lower_strike"),
+        higherStrike: readBigInt(payload.higher_strike, "higher_strike"),
+        quantity: readBigInt(payload.quantity, "quantity"),
+        cost: readBigInt(payload.cost, "cost"),
+        askPrice: readBigInt(payload.ask_price, "ask_price"),
+        digest: readEventDigest(payloadEvent),
+        timestampMs: readEventTimestampMs(payloadEvent),
+    };
+}
+
+interface QueryMoveEventsOptions {
+    eventType: string;
+    maxPages: number;
+    pageSize: number;
+}
+
+async function queryMoveEvents({ eventType, maxPages, pageSize }: QueryMoveEventsOptions): Promise<{
+    events: unknown[];
+    pagesRead: number;
+    reachedLimit: boolean;
+}> {
+    const events: unknown[] = [];
+    let cursor: unknown = null;
+    for (let page = 0; page < maxPages; page += 1) {
+        const response = await fetch(PREDICT_BINARY_CONFIG.fullnodeJsonRpcUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+                jsonrpc: "2.0",
+                id: page + 1,
+                method: "suix_queryEvents",
+                params: [{ MoveEventType: eventType }, cursor, pageSize, true],
+            }),
+        });
+        if (!response.ok) {
+            throw new Error(`Event query failed for ${eventType}: ${response.status}`);
+        }
+        const payload = (await response.json()) as unknown;
+        if (
+            !isRecord(payload) ||
+            !isRecord(payload.result) ||
+            !Array.isArray(payload.result.data)
+        ) {
+            throw new Error(`Invalid event query response for ${eventType}`);
+        }
+        events.push(...payload.result.data);
+        if (payload.result.hasNextPage !== true) {
+            return { events, pagesRead: page + 1, reachedLimit: false };
+        }
+        cursor = payload.result.nextCursor;
+    }
+    return { events, pagesRead: maxPages, reachedLimit: true };
+}
+
+export async function queryPositionMintedEvents({
+    trader,
+    predictId,
+    oracleId,
+    expiryMs,
+    strike,
+    quoteCoinType,
+}: {
+    trader: string;
+    predictId: string;
+    oracleId: string;
+    expiryMs: number;
+    strike: bigint;
+    quoteCoinType: string;
+}): Promise<MintedPositionEvent[]> {
+    const matches: MintedPositionEvent[] = [];
+    const queried = await queryMoveEvents({
+        eventType: POSITION_MINTED_EVENT_TYPE,
+        maxPages: 20,
+        pageSize: 50,
+    });
+    for (const event of queried.events) {
+        let minted: MintedPositionEvent;
+        try {
+            minted = readPositionMintedEvent(event);
+        } catch {
+            continue;
+        }
+        if (
+            minted.trader.toLowerCase() !== trader.toLowerCase() ||
+            minted.predictId !== predictId ||
+            minted.oracleId !== oracleId ||
+            minted.expiryMs !== expiryMs ||
+            minted.strike !== strike ||
+            normalizeTypeName(minted.quoteAssetName) !== normalizeTypeName(quoteCoinType) ||
+            minted.cost <= 0n ||
+            minted.quantity <= 0n
+        ) {
+            continue;
+        }
+        matches.push(minted);
+    }
+    return matches;
+}
+
+export async function queryWalletPositionMintedEvents({
+    trader,
+    predictId,
+    quoteCoinType,
+    maxPages = 40,
+    pageSize = 50,
+}: {
+    trader: string;
+    predictId: string;
+    quoteCoinType: string;
+    maxPages?: number;
+    pageSize?: number;
+}): Promise<{ events: MintedPositionEvent[]; pagesRead: number; reachedLimit: boolean }> {
+    const queried = await queryMoveEvents({
+        eventType: POSITION_MINTED_EVENT_TYPE,
+        maxPages,
+        pageSize,
+    });
+    const events: MintedPositionEvent[] = [];
+    for (const event of queried.events) {
+        let minted: MintedPositionEvent;
+        try {
+            minted = readPositionMintedEvent(event);
+        } catch {
+            continue;
+        }
+        if (
+            minted.trader.toLowerCase() !== trader.toLowerCase() ||
+            minted.predictId !== predictId ||
+            normalizeTypeName(minted.quoteAssetName) !== normalizeTypeName(quoteCoinType) ||
+            minted.cost <= 0n ||
+            minted.quantity <= 0n
+        ) {
+            continue;
+        }
+        events.push(minted);
+    }
+    return { events, pagesRead: queried.pagesRead, reachedLimit: queried.reachedLimit };
+}
+
+export async function queryWalletRangeMintedEvents({
+    trader,
+    predictId,
+    quoteCoinType,
+    maxPages = 40,
+    pageSize = 50,
+}: {
+    trader: string;
+    predictId: string;
+    quoteCoinType: string;
+    maxPages?: number;
+    pageSize?: number;
+}): Promise<{ events: RangeMintEvent[]; pagesRead: number; reachedLimit: boolean }> {
+    const queried = await queryMoveEvents({
+        eventType: RANGE_MINTED_EVENT_TYPE,
+        maxPages,
+        pageSize,
+    });
+    const events: RangeMintEvent[] = [];
+    for (const event of queried.events) {
+        let minted: RangeMintEvent;
+        try {
+            minted = readRangeMintedEvent([event]);
+        } catch {
+            continue;
+        }
+        if (
+            minted.trader.toLowerCase() !== trader.toLowerCase() ||
+            minted.predictId !== predictId ||
+            normalizeTypeName(minted.quoteAssetName) !== normalizeTypeName(quoteCoinType) ||
+            minted.cost <= 0n ||
+            minted.quantity <= 0n
+        ) {
+            continue;
+        }
+        events.push(minted);
+    }
+    return { events, pagesRead: queried.pagesRead, reachedLimit: queried.reachedLimit };
+}
+
+export const POSITION_REDEEMED_EVENT_TYPE = `${PREDICT_BINARY_CONFIG.packageId}::predict::PositionRedeemed`;
+
+export function readPositionRedeemedEvent(event: unknown): RedeemedPositionEvent {
+    const payload = readSuiEventPayload(event);
+    if (!payload) {
+        throw new Error("PositionRedeemed event was not found");
     }
     return {
         managerId: readString(payload.manager_id, "manager_id"),
@@ -989,9 +1392,42 @@ export function readMintEvent(events: SuiClientTypes.Event[] | undefined): MintE
         strike: readBigInt(payload.strike, "strike"),
         isUp: readBoolean(payload.is_up, "is_up"),
         quantity: readBigInt(payload.quantity, "quantity"),
-        cost: readBigInt(payload.cost, "cost"),
-        askPrice: readBigInt(payload.ask_price, "ask_price"),
+        payout: readBigInt(payload.payout, "payout"),
+        bidPrice: readBigInt(payload.bid_price, "bid_price"),
+        isSettled: readBoolean(payload.is_settled, "is_settled"),
+        digest: readEventDigest(event),
+        timestampMs: readEventTimestampMs(event),
     };
+}
+
+export async function queryManagerPositionRedeemedEvents({
+    managerId,
+    maxPages = 40,
+    pageSize = 50,
+}: {
+    managerId: string;
+    maxPages?: number;
+    pageSize?: number;
+}): Promise<{ events: RedeemedPositionEvent[]; pagesRead: number; reachedLimit: boolean }> {
+    const queried = await queryMoveEvents({
+        eventType: POSITION_REDEEMED_EVENT_TYPE,
+        maxPages,
+        pageSize,
+    });
+    const events: RedeemedPositionEvent[] = [];
+    for (const event of queried.events) {
+        let redeemed: RedeemedPositionEvent;
+        try {
+            redeemed = readPositionRedeemedEvent(event);
+        } catch {
+            continue;
+        }
+        if (redeemed.managerId !== managerId) {
+            continue;
+        }
+        events.push(redeemed);
+    }
+    return { events, pagesRead: queried.pagesRead, reachedLimit: queried.reachedLimit };
 }
 
 export function readRedeemEvent(events: SuiClientTypes.Event[] | undefined): RedeemEvent {

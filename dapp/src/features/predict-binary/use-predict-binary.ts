@@ -16,10 +16,11 @@ import {
     findMintEvent,
     findPredictManager,
     type MintEvent,
+    type MintedPositionEvent,
+    POSITION_MINTED_EVENT_TYPE,
+    queryPositionMintedEvents,
     type RedeemEvent,
-    readBinaryPosition,
     readDigest,
-    readManagerBalance,
     readManagerCreatedEvent,
     readMintEvent,
     readRedeemEvent,
@@ -35,6 +36,7 @@ import {
     describeCreatePredictManagerMoveCalls,
     describeMintBinaryMoveCalls,
 } from "@/src/lib/predict-binary/transactions";
+import { isWalletUserRejection, readWalletCancellationDebug } from "@/src/lib/wallet-errors";
 
 export type BinaryDirection = "UP" | "DOWN";
 export type BinaryTxStatus =
@@ -55,6 +57,17 @@ interface SidePreviewState {
     previewKey: string | null;
 }
 
+interface BetAvailability {
+    canBet: boolean;
+    reason: string;
+    previewKey: string | null;
+    expectedPreviewKey: string | null;
+    previewOk: boolean;
+    previewReason: string | null;
+    quantity: string | null;
+    mintCost: string | null;
+}
+
 interface BinaryPositionState {
     direction: BinaryDirection;
     quantity: bigint;
@@ -65,6 +78,12 @@ interface BinaryPositionState {
     expiryMs: number;
     oracleId: string;
     digest?: string;
+}
+
+type BinarySidePositions = Record<BinaryDirection, BinaryPositionState | null>;
+
+function emptySidePositions(): BinarySidePositions {
+    return { UP: null, DOWN: null };
 }
 
 function readErrorMessage(caught: unknown): string {
@@ -108,6 +127,14 @@ function readTransactionEffects(value: unknown): Record<string, unknown> | null 
     return readNestedRecord(readNestedRecord(value, "Transaction"), "effects");
 }
 
+function readTransactionEvents(value: unknown): unknown[] {
+    if (isRecord(value) && Array.isArray(value.events)) {
+        return value.events;
+    }
+    const transaction = readNestedRecord(value, "Transaction");
+    return transaction && Array.isArray(transaction.events) ? transaction.events : [];
+}
+
 function readTransactionEffectField(value: unknown, fieldName: string): unknown {
     return readTransactionEffects(value)?.[fieldName] ?? null;
 }
@@ -123,6 +150,8 @@ function logPositionMintedEventDetails(event: unknown, mint: MintEvent | null): 
         eventType: isRecord(event) ? (event.eventType ?? event.type ?? null) : null,
         parsedJson: toConsoleValue(payloads.parsedJson),
         json: toConsoleValue(payloads.json),
+        predict_id:
+            mint?.predictId ?? payloads.parsedJson?.predict_id ?? payloads.json?.predict_id ?? null,
         oracle_id:
             mint?.oracleId ?? payloads.parsedJson?.oracle_id ?? payloads.json?.oracle_id ?? null,
         expiry:
@@ -149,6 +178,56 @@ function logPositionMintedEventDetails(event: unknown, mint: MintEvent | null): 
 
 function directionFromBool(isUp: boolean): BinaryDirection {
     return isUp ? "UP" : "DOWN";
+}
+
+function positionFromMintEvent(mint: MintEvent, digest: string): BinaryPositionState {
+    const entryOdds = formatBinaryOddsFromQuantity(mint.quantity, mint.cost);
+    return {
+        direction: directionFromBool(mint.isUp),
+        quantity: mint.quantity,
+        cost: mint.cost,
+        payout: null,
+        entryOdds,
+        strike: mint.strike,
+        expiryMs: mint.expiryMs,
+        oracleId: mint.oracleId,
+        digest,
+    };
+}
+
+function mergeMintedSidePosition(
+    current: BinaryPositionState | null,
+    next: BinaryPositionState,
+): BinaryPositionState {
+    if (
+        !current ||
+        current.direction !== next.direction ||
+        current.strike !== next.strike ||
+        current.expiryMs !== next.expiryMs ||
+        current.oracleId !== next.oracleId
+    ) {
+        return next;
+    }
+    const quantity = current.quantity + next.quantity;
+    const cost = current.cost + next.cost;
+    return {
+        ...next,
+        quantity,
+        cost,
+        entryOdds: formatBinaryOddsFromQuantity(quantity, cost),
+    };
+}
+
+function sidePositionsFromMintedEvents(events: MintedPositionEvent[]): BinarySidePositions {
+    const restored = emptySidePositions();
+    for (const event of events) {
+        const position = positionFromMintEvent(event, event.digest ?? "");
+        restored[position.direction] = mergeMintedSidePosition(
+            restored[position.direction],
+            position,
+        );
+    }
+    return restored;
 }
 
 interface BinaryPreviewDebug {
@@ -197,20 +276,6 @@ interface ParsedBinaryPreviewSide {
     debug: BinaryPreviewDebug;
 }
 
-class BinaryMintPreviewError extends Error {
-    constructor(
-        message: string,
-        readonly details: {
-            side: BinaryDirection;
-            previewKey: string | null;
-            debug: BinaryPreviewDebug | null;
-        },
-    ) {
-        super(message);
-        this.name = "BinaryMintPreviewError";
-    }
-}
-
 function previewFromApiSide(result: BinaryPreviewSideResponse): ParsedBinaryPreviewSide {
     if (!result.ok) {
         return {
@@ -230,19 +295,68 @@ function previewFromApiSide(result: BinaryPreviewSideResponse): ParsedBinaryPrev
     return { ok: true, preview, error: null, debug: result.debug };
 }
 
-function selectPreviewSide(
-    result: Awaited<ReturnType<typeof previewBinaryOddsViaApi>>,
-    direction: BinaryDirection,
-): BudgetedTradePreview {
-    const side = direction === "UP" ? result.up : result.down;
-    if (side.preview) {
-        return side.preview;
+function buildPreviewApiKey({
+    market,
+    budget,
+    oracleTimestampMs,
+}: {
+    market: BtcBinaryMarket;
+    budget: bigint;
+    oracleTimestampMs: number | null;
+}): string {
+    return [
+        market.oracleId,
+        market.expiryMs.toString(),
+        market.strike.toString(),
+        String(oracleTimestampMs ?? 0),
+        budget.toString(),
+    ].join(":");
+}
+
+function getBetAvailability({
+    canTrade,
+    hasPositiveAmount,
+    state,
+    expectedPreviewKey,
+}: {
+    canTrade: boolean;
+    hasPositiveAmount: boolean;
+    state: SidePreviewState;
+    expectedPreviewKey: string | null;
+}): BetAvailability {
+    const previewReason = state.debug?.reason ?? state.error;
+    const previewOk =
+        state.status === "READY" &&
+        Boolean(state.preview) &&
+        state.previewKey !== null &&
+        state.previewKey === expectedPreviewKey;
+    const base = {
+        previewKey: state.previewKey,
+        expectedPreviewKey,
+        previewOk,
+        previewReason,
+        quantity: state.preview?.quantity.toString() ?? null,
+        mintCost: state.preview?.mintCost.toString() ?? null,
+    };
+    if (!canTrade) {
+        return { ...base, canBet: false, reason: "Market is not currently mintable." };
     }
-    throw new BinaryMintPreviewError("Preview failed", {
-        side: direction,
-        previewKey: result.previewKey,
-        debug: side.debug,
-    });
+    if (!hasPositiveAmount) {
+        return { ...base, canBet: false, reason: "Enter an amount." };
+    }
+    if (state.status === "PREVIEWING") {
+        return { ...base, canBet: false, reason: "Odds unavailable. Please wait or refresh." };
+    }
+    if (!state.preview || state.status === "ERROR" || state.status === "UNAVAILABLE") {
+        return { ...base, canBet: false, reason: "Odds unavailable. Please wait or refresh." };
+    }
+    if (state.previewKey !== expectedPreviewKey) {
+        return { ...base, canBet: false, reason: "Preview is stale. Please wait." };
+    }
+    if (state.preview.quantity <= 0n || state.preview.mintCost <= 0n) {
+        return { ...base, canBet: false, reason: "Market is not currently mintable." };
+    }
+    return { ...base, canBet: true, reason: "OK" };
 }
 
 async function previewBinaryOddsViaApi({
@@ -312,6 +426,7 @@ export function usePredictBinary(
     const dAppKit = useDAppKit();
     const redeemingRef = useRef<string | null>(null);
     const previewRequestRef = useRef(0);
+    const sidePositionRestoreRef = useRef(0);
     const loggedPreviewErrorsRef = useRef<Set<string>>(new Set());
     const previewKeyRef = useRef<string | null>(null);
     const [amount, setAmount] = useState("");
@@ -337,6 +452,7 @@ export function usePredictBinary(
         previewKey: null,
     });
     const [position, setPosition] = useState<BinaryPositionState | null>(null);
+    const [sidePositions, setSidePositions] = useState<BinarySidePositions>(emptySidePositions);
     const [lastMint, setLastMint] = useState<MintEvent | null>(null);
     const [lastEntryOdds, setLastEntryOdds] = useState<string | null>(null);
     const [lastRedeem, setLastRedeem] = useState<RedeemEvent | null>(null);
@@ -353,6 +469,7 @@ export function usePredictBinary(
             setMarket(null);
             setManagerId(null);
             setPosition(null);
+            setSidePositions(emptySidePositions());
             setMessage(
                 !address ? "Wallet not connected" : "Please switch your wallet to Sui Testnet",
             );
@@ -362,6 +479,7 @@ export function usePredictBinary(
         const baseMarket = createMarketFromRound(roundMarket);
         if (!baseMarket) {
             setMarket(null);
+            setSidePositions(emptySidePositions());
             setMessage(roundMarket?.message ?? "NO ACTIVE ROUND");
             return;
         }
@@ -377,61 +495,11 @@ export function usePredictBinary(
             setManagerId(foundManagerId);
 
             if (foundManagerId) {
-                const [nextManagerBalance, upPosition, downPosition] = await Promise.all([
-                    readManagerBalance(client, address, foundManagerId),
-                    readBinaryPosition(client, {
-                        sender: address,
-                        managerId: foundManagerId,
-                        oracleId: nextMarket.oracleId,
-                        expiryMs: nextMarket.expiryMs,
-                        strike: nextMarket.strike,
-                        isUp: true,
-                    }),
-                    readBinaryPosition(client, {
-                        sender: address,
-                        managerId: foundManagerId,
-                        oracleId: nextMarket.oracleId,
-                        expiryMs: nextMarket.expiryMs,
-                        strike: nextMarket.strike,
-                        isUp: false,
-                    }),
-                ]);
-                setManagerBalance(nextManagerBalance);
-                const activePosition =
-                    upPosition > 0n
-                        ? { direction: "UP" as const, quantity: upPosition }
-                        : downPosition > 0n
-                          ? { direction: "DOWN" as const, quantity: downPosition }
-                          : null;
-                if (activePosition) {
-                    setPosition((current) => {
-                        if (
-                            current &&
-                            current.direction === activePosition.direction &&
-                            current.quantity === activePosition.quantity &&
-                            current.strike === nextMarket.strike &&
-                            current.expiryMs === nextMarket.expiryMs &&
-                            current.oracleId === nextMarket.oracleId
-                        ) {
-                            return current;
-                        }
-                        return {
-                            direction: activePosition.direction,
-                            quantity: activePosition.quantity,
-                            cost: 0n,
-                            payout: null,
-                            entryOdds: null,
-                            strike: nextMarket.strike,
-                            expiryMs: nextMarket.expiryMs,
-                            oracleId: nextMarket.oracleId,
-                        };
-                    });
-                } else {
-                    setPosition(null);
-                }
+                setManagerBalance(0n);
             } else {
                 setManagerBalance(0n);
                 setPosition(null);
+                setSidePositions(emptySidePositions());
             }
             if (!isBusy) {
                 setTxStatus("READY");
@@ -447,6 +515,51 @@ export function usePredictBinary(
     useEffect(() => {
         void refresh();
     }, [refresh]);
+
+    const restoreSidePositions = useCallback(
+        async (targetMarket: BtcBinaryMarket) => {
+            if (!address || !isTestnet) {
+                setSidePositions(emptySidePositions());
+                return;
+            }
+            const requestId = sidePositionRestoreRef.current + 1;
+            sidePositionRestoreRef.current = requestId;
+            try {
+                const events = await queryPositionMintedEvents({
+                    trader: address,
+                    predictId: PREDICT_BINARY_CONFIG.predictObjectId,
+                    oracleId: targetMarket.oracleId,
+                    expiryMs: targetMarket.expiryMs,
+                    strike: targetMarket.strike,
+                    quoteCoinType: PREDICT_BINARY_CONFIG.quoteCoinType,
+                });
+                if (sidePositionRestoreRef.current !== requestId) {
+                    return;
+                }
+                setSidePositions(sidePositionsFromMintedEvents(events));
+            } catch (caught) {
+                if (sidePositionRestoreRef.current !== requestId) {
+                    return;
+                }
+                console.warn("Binary PositionMinted history restore failed", {
+                    walletAddress: address,
+                    oracleId: targetMarket.oracleId,
+                    expiryMs: targetMarket.expiryMs,
+                    referenceStrikeRaw: targetMarket.strike.toString(),
+                    error: readErrorMessage(caught),
+                });
+            }
+        },
+        [address, isTestnet],
+    );
+
+    useEffect(() => {
+        if (!address || !isTestnet || !market) {
+            setSidePositions(emptySidePositions());
+            return;
+        }
+        void restoreSidePositions(market);
+    }, [address, isTestnet, market, restoreSidePositions]);
 
     useEffect(() => {
         previewRequestRef.current += 1;
@@ -537,20 +650,20 @@ export function usePredictBinary(
                         return;
                     }
                     const error = readErrorMessage(caught);
-                    setUpPreview((current) => ({
-                        ...current,
-                        status: current.preview ? "READY" : "ERROR",
+                    setUpPreview({
+                        status: "ERROR",
+                        preview: null,
                         error,
                         debug: null,
                         previewKey,
-                    }));
-                    setDownPreview((current) => ({
-                        ...current,
-                        status: current.preview ? "READY" : "ERROR",
+                    });
+                    setDownPreview({
+                        status: "ERROR",
+                        preview: null,
                         error,
                         debug: null,
                         previewKey,
-                    }));
+                    });
                     setPreviewStatus("ERROR");
                     warnPreviewFailure({ direction: "UP", error, debug: null });
                     warnPreviewFailure({ direction: "DOWN", error, debug: null });
@@ -581,21 +694,21 @@ export function usePredictBinary(
                     }
                     hasError = true;
                     if (direction === "UP") {
-                        setUpPreview((current) => ({
-                            ...current,
-                            status: current.preview ? "READY" : "ERROR",
+                        setUpPreview({
+                            status: "ERROR",
+                            preview: null,
                             error: side.error ?? "Preview failed",
                             debug: side.debug,
                             previewKey: result.previewKey,
-                        }));
+                        });
                     } else {
-                        setDownPreview((current) => ({
-                            ...current,
-                            status: current.preview ? "READY" : "ERROR",
+                        setDownPreview({
+                            status: "ERROR",
+                            preview: null,
                             error: side.error ?? "Preview failed",
                             debug: side.debug,
                             previewKey: result.previewKey,
-                        }));
+                        });
                     }
                     warnPreviewFailure({
                         direction,
@@ -670,20 +783,140 @@ export function usePredictBinary(
                 setMessage(readErrorMessage(caught));
                 return;
             }
+            const expectedPreviewKey = buildPreviewApiKey({
+                market: lockedMarket,
+                budget,
+                oracleTimestampMs,
+            });
+            const canTradeBase =
+                Boolean(address) && isTestnet && isBettingOpen && Boolean(lockedMarket) && !isBusy;
+            let loggedAvailability = false;
+            const logAvailability = (availability: BetAvailability) => {
+                if (loggedAvailability) {
+                    return;
+                }
+                loggedAvailability = true;
+                console.info("Binary bet availability", {
+                    side: direction,
+                    canBet: availability.canBet,
+                    reason: availability.reason,
+                    previewKey: availability.previewKey,
+                    expectedPreviewKey: availability.expectedPreviewKey,
+                    previewOk: availability.previewOk,
+                    previewReason: availability.previewReason,
+                    quantity: availability.quantity,
+                    mintCost: availability.mintCost,
+                    betAmountAtomic: budget.toString(),
+                    oracleId: lockedMarket.oracleId,
+                    expiry: lockedMarket.expiryMs,
+                    referenceStrikeRaw: lockedMarket.strike.toString(),
+                });
+            };
+            const currentPreviewState = direction === "UP" ? upPreview : downPreview;
+            const initialAvailability = getBetAvailability({
+                canTrade: canTradeBase,
+                hasPositiveAmount: budget > 0n,
+                state: currentPreviewState,
+                expectedPreviewKey,
+            });
+            if (!initialAvailability.canBet) {
+                logAvailability(initialAvailability);
+                setTxStatus("FAILED");
+                setMessage(initialAvailability.reason);
+                return;
+            }
             if (budget > walletBalance + managerBalance) {
+                logAvailability(initialAvailability);
                 setTxStatus("FAILED");
                 setMessage("Insufficient DUSDC balance");
                 return;
             }
 
             try {
-                const freshPreviewResult = await previewBinaryOddsViaApi({
-                    address,
-                    market: lockedMarket,
-                    budget,
-                    oracleTimestampMs,
+                let freshPreviewResult: Awaited<ReturnType<typeof previewBinaryOddsViaApi>>;
+                try {
+                    freshPreviewResult = await previewBinaryOddsViaApi({
+                        address,
+                        market: lockedMarket,
+                        budget,
+                        oracleTimestampMs,
+                    });
+                } catch (caught) {
+                    const error = readErrorMessage(caught);
+                    const unavailableState = {
+                        status: "ERROR" as const,
+                        preview: null,
+                        error,
+                        debug: null,
+                        previewKey: null,
+                    };
+                    if (direction === "UP") {
+                        setUpPreview(unavailableState);
+                    } else {
+                        setDownPreview(unavailableState);
+                    }
+                    const availability = getBetAvailability({
+                        canTrade: canTradeBase,
+                        hasPositiveAmount: budget > 0n,
+                        state: unavailableState,
+                        expectedPreviewKey,
+                    });
+                    logAvailability(availability);
+                    setTxStatus("FAILED");
+                    setMessage(availability.reason);
+                    return;
+                }
+                if (freshPreviewResult.previewKey !== expectedPreviewKey) {
+                    const staleState = {
+                        status: "ERROR" as const,
+                        preview: null,
+                        error: "Preview is stale",
+                        debug: null,
+                        previewKey: freshPreviewResult.previewKey,
+                    };
+                    if (direction === "UP") {
+                        setUpPreview(staleState);
+                    } else {
+                        setDownPreview(staleState);
+                    }
+                    const availability = getBetAvailability({
+                        canTrade: canTradeBase,
+                        hasPositiveAmount: budget > 0n,
+                        state: staleState,
+                        expectedPreviewKey,
+                    });
+                    logAvailability(availability);
+                    setTxStatus("FAILED");
+                    setMessage(availability.reason);
+                    return;
+                }
+                const sidePreview =
+                    direction === "UP" ? freshPreviewResult.up : freshPreviewResult.down;
+                const freshPreviewState = {
+                    status: sidePreview.preview ? ("READY" as const) : ("ERROR" as const),
+                    preview: sidePreview.preview,
+                    error: sidePreview.error,
+                    debug: sidePreview.debug,
+                    previewKey: freshPreviewResult.previewKey,
+                };
+                if (direction === "UP") {
+                    setUpPreview(freshPreviewState);
+                } else {
+                    setDownPreview(freshPreviewState);
+                }
+                const freshAvailability = getBetAvailability({
+                    canTrade: canTradeBase,
+                    hasPositiveAmount: budget > 0n,
+                    state: freshPreviewState,
+                    expectedPreviewKey,
                 });
-                const latestPreview = selectPreviewSide(freshPreviewResult, direction);
+                logAvailability(freshAvailability);
+                if (!freshAvailability.canBet || !freshPreviewState.preview) {
+                    setTxStatus("FAILED");
+                    setMessage(freshAvailability.reason);
+                    return;
+                }
+                const latestPreview = freshPreviewState.preview;
                 if (latestPreview.quantity <= 0n) {
                     throw new Error("Preview failed: quantity is zero");
                 }
@@ -709,25 +942,12 @@ export function usePredictBinary(
                         latestPreview.quantity,
                         latestPreview.mintCost,
                     ),
+                    previewSource: "api",
                     previewKey: freshPreviewResult.previewKey,
                     cacheHit: freshPreviewResult.cacheHit,
                 });
 
                 let nextManagerId = managerId;
-                const walletBalanceBefore = await readWalletQuoteBalance(client, address);
-                const initialManagerBalance = nextManagerId
-                    ? await readManagerBalance(client, address, nextManagerId)
-                    : 0n;
-                const initialPosition = nextManagerId
-                    ? await readBinaryPosition(client, {
-                          sender: address,
-                          managerId: nextManagerId,
-                          oracleId: lockedMarket.oracleId,
-                          expiryMs: lockedMarket.expiryMs,
-                          strike: lockedMarket.strike,
-                          isUp: direction === "UP",
-                      })
-                    : 0n;
 
                 if (!nextManagerId) {
                     const createMoveCalls = describeCreatePredictManagerMoveCalls();
@@ -770,11 +990,6 @@ export function usePredictBinary(
                     setManagerId(nextManagerId);
                 }
 
-                const latestManagerBalance = await readManagerBalance(
-                    client,
-                    address,
-                    nextManagerId,
-                );
                 const latestMarket = createMarketFromRound(roundMarket);
                 if (
                     !latestMarket ||
@@ -784,19 +999,12 @@ export function usePredictBinary(
                 ) {
                     throw new Error("Round changed before wallet confirmation");
                 }
+                const knownManagerBalance = nextManagerId ? managerBalance : 0n;
                 const depositAmount =
-                    latestPreview.mintCost > latestManagerBalance
-                        ? latestPreview.mintCost - latestManagerBalance
+                    latestPreview.mintCost > knownManagerBalance
+                        ? latestPreview.mintCost - knownManagerBalance
                         : 0n;
 
-                const positionBefore = await readBinaryPosition(client, {
-                    sender: address,
-                    managerId: nextManagerId,
-                    oracleId: latestMarket.oracleId,
-                    expiryMs: latestMarket.expiryMs,
-                    strike: latestMarket.strike,
-                    isUp: direction === "UP",
-                });
                 setMessage(
                     `Using ${formatTokenAmount(
                         latestPreview.mintCost,
@@ -825,11 +1033,8 @@ export function usePredictBinary(
                     quantity: latestPreview.quantity.toString(),
                     mintCost: latestPreview.mintCost.toString(),
                     depositAmount: depositAmount.toString(),
-                    walletBalanceBefore: walletBalanceBefore.toString(),
-                    managerBalanceBefore: latestManagerBalance.toString(),
-                    positionBefore: positionBefore.toString(),
-                    initialManagerBalance: initialManagerBalance.toString(),
-                    initialPosition: initialPosition.toString(),
+                    knownManagerBalance: knownManagerBalance.toString(),
+                    preWalletRpc: "skipped",
                     quoteCoinType: PREDICT_BINARY_CONFIG.quoteCoinType,
                 });
                 const tx = createMintBinaryTransaction(mintInput);
@@ -851,61 +1056,39 @@ export function usePredictBinary(
                     },
                 });
                 requestPostTransactionBalanceRefresh("binary:mint-transaction-confirmed");
+                const executedEvents = readTransactionEvents(executed);
                 console.info("Binary bet mint transaction confirmed", {
                     txDigest: digest,
                     effectsStatus: toConsoleValue(readTransactionEffectField(executed, "status")),
                     gasUsed: toConsoleValue(readTransactionEffectField(executed, "gasUsed")),
                     effects: toConsoleValue(readTransactionEffects(executed)),
                     transaction: toConsoleValue(executed.Transaction?.transaction),
-                    events: toConsoleValue(executed.Transaction?.events),
+                    events: toConsoleValue(executedEvents),
                     balanceChanges: toConsoleValue(executed.Transaction?.balanceChanges),
                     moveCalls: mintMoveCalls,
                 });
                 let mint: MintEvent;
-                const rawMintEvent = findMintEvent(executed.Transaction?.events);
+                const rawMintEvent = findMintEvent(executedEvents);
                 try {
-                    mint = readMintEvent(executed.Transaction?.events);
+                    mint = readMintEvent(executedEvents);
                 } catch (caught) {
                     logPositionMintedEventDetails(rawMintEvent, null);
-                    const [
-                        walletBalanceAfterNoMint,
-                        managerBalanceAfterNoMint,
-                        positionAfterNoMint,
-                    ] = await Promise.all([
-                        readWalletQuoteBalance(client, address),
-                        readManagerBalance(client, address, nextManagerId),
-                        readBinaryPosition(client, {
-                            sender: address,
-                            managerId: nextManagerId,
-                            oracleId: latestMarket.oracleId,
-                            expiryMs: latestMarket.expiryMs,
-                            strike: latestMarket.strike,
-                            isUp: direction === "UP",
-                        }),
-                    ]);
-                    if (
-                        walletBalanceAfterNoMint !== walletBalanceBefore ||
-                        managerBalanceAfterNoMint !== latestManagerBalance
-                    ) {
-                        console.warn("Deposit succeeded but mint position was not confirmed", {
-                            txDigest: digest,
-                            managerBalanceAfter: managerBalanceAfterNoMint.toString(),
-                            walletBalanceAfter: walletBalanceAfterNoMint.toString(),
-                            walletBalanceBefore: walletBalanceBefore.toString(),
-                            managerBalanceBefore: latestManagerBalance.toString(),
-                            positionBefore: positionBefore.toString(),
-                            positionAfter: positionAfterNoMint.toString(),
-                        });
-                    }
+                    console.warn("Binary PositionMinted event was not found", {
+                        expectedEventType: POSITION_MINTED_EVENT_TYPE,
+                        eventTypes: executedEvents.map((event) =>
+                            isRecord(event) ? (event.eventType ?? event.type ?? null) : null,
+                        ),
+                    });
                     throw new BetValidationError("No position was minted", {
                         reason: readErrorMessage(caught),
                         txDigest: digest,
-                        events: toConsoleValue(executed.Transaction?.events),
+                        events: toConsoleValue(executedEvents),
                         moveCalls: mintMoveCalls,
                     });
                 }
                 logPositionMintedEventDetails(rawMintEvent, mint);
                 if (
+                    mint.predictId !== PREDICT_BINARY_CONFIG.predictObjectId ||
                     mint.managerId !== nextManagerId ||
                     mint.oracleId !== latestMarket.oracleId ||
                     mint.expiryMs !== latestMarket.expiryMs ||
@@ -917,6 +1100,7 @@ export function usePredictBinary(
                     throw new BetValidationError("No position was minted", {
                         reason: "PositionMinted event did not match the locked bet",
                         expected: {
+                            predictId: PREDICT_BINARY_CONFIG.predictObjectId,
                             managerId: nextManagerId,
                             oracleId: latestMarket.oracleId,
                             expiryMs: latestMarket.expiryMs,
@@ -927,105 +1111,41 @@ export function usePredictBinary(
                         txDigest: digest,
                     });
                 }
-                const [walletBalanceAfter, managerBalanceAfter, positionAfter] = await Promise.all([
-                    readWalletQuoteBalance(client, address),
-                    readManagerBalance(client, address, nextManagerId),
-                    readBinaryPosition(client, {
-                        sender: address,
-                        managerId: nextManagerId,
-                        oracleId: latestMarket.oracleId,
-                        expiryMs: latestMarket.expiryMs,
-                        strike: latestMarket.strike,
-                        isUp: direction === "UP",
-                    }),
-                ]);
-                const positionDelta = positionAfter - positionBefore;
-                console.info("Binary post-mint position refresh", {
-                    txDigest: digest,
-                    positionBefore: positionBefore.toString(),
-                    positionAfter: positionAfter.toString(),
-                    positionDelta: positionDelta.toString(),
-                });
-                if (positionAfter < positionBefore + mint.quantity) {
-                    console.warn("Binary position query lagged behind PositionMinted event", {
-                        txDigest: digest,
-                        reason: "PredictManager position did not increase by minted quantity",
-                        positionBefore: positionBefore.toString(),
-                        positionAfter: positionAfter.toString(),
-                        mintedQuantity: mint.quantity.toString(),
-                    });
-                }
-                if (
-                    walletBalanceAfter === walletBalanceBefore &&
-                    managerBalanceAfter === latestManagerBalance
-                ) {
-                    console.warn("Binary balances did not change after PositionMinted event", {
-                        txDigest: digest,
-                        reason: "DUSDC wallet and manager balances did not change",
-                        walletBalanceBefore: walletBalanceBefore.toString(),
-                        walletBalanceAfter: walletBalanceAfter.toString(),
-                        managerBalanceBefore: latestManagerBalance.toString(),
-                        managerBalanceAfter: managerBalanceAfter.toString(),
-                    });
-                }
                 console.info("Binary bet minted", {
                     txDigest: digest,
                     positionMintedEvent: toConsoleValue(mint),
-                    walletBalanceBefore: walletBalanceBefore.toString(),
-                    walletBalanceAfter: walletBalanceAfter.toString(),
-                    managerBalanceBefore: latestManagerBalance.toString(),
-                    managerBalanceAfter: managerBalanceAfter.toString(),
-                    positionBefore: positionBefore.toString(),
-                    positionAfter: positionAfter.toString(),
                     entryOdds: formatBinaryOddsFromQuantity(mint.quantity, mint.cost),
                 });
                 setLastMint(mint);
-                const entryOdds = formatBinaryOddsFromQuantity(mint.quantity, mint.cost);
+                const mintedPosition = positionFromMintEvent(mint, digest);
+                const entryOdds = mintedPosition.entryOdds;
                 setLastEntryOdds(entryOdds);
                 setLastDigest(digest);
-                setPosition({
-                    direction: directionFromBool(mint.isUp),
-                    quantity: mint.quantity,
-                    cost: mint.cost,
-                    payout: null,
-                    entryOdds,
-                    strike: mint.strike,
-                    expiryMs: mint.expiryMs,
-                    oracleId: mint.oracleId,
-                    digest,
-                });
+                setPosition(mintedPosition);
+                await restoreSidePositions(latestMarket);
                 setTxStatus("BET PLACED");
                 setMessage("BET PLACED");
                 await refresh();
             } catch (caught) {
+                if (isWalletUserRejection(caught)) {
+                    console.info(
+                        "Binary mint transaction cancelled",
+                        readWalletCancellationDebug(caught),
+                    );
+                    setTxStatus("READY");
+                    setMessage("Transaction cancelled");
+                    return;
+                }
                 const errorMessage = readErrorMessage(caught);
-                if (
-                    caught instanceof BinaryMintPreviewError ||
-                    errorMessage.startsWith("Preview")
-                ) {
-                    const debug =
-                        caught instanceof BinaryMintPreviewError ? caught.details.debug : null;
+                if (errorMessage.startsWith("Preview")) {
                     console.warn("Binary mint preview failed", {
-                        side:
-                            caught instanceof BinaryMintPreviewError
-                                ? caught.details.side
-                                : direction,
-                        previewKey:
-                            caught instanceof BinaryMintPreviewError
-                                ? caught.details.previewKey
-                                : null,
+                        side: direction,
                         ok: false,
                         error: "Preview failed",
-                        reason: debug?.reason ?? null,
-                        devInspectError: debug?.devInspectError ?? errorMessage,
-                        moveAbortCode: debug?.moveAbortCode ?? null,
-                        lastTriedQuantity: debug?.lastTriedQuantity ?? null,
-                        lastMintCost: debug?.lastMintCost ?? null,
-                        lastRedeemPayout: debug?.lastRedeemPayout ?? null,
-                        returnValuesRaw: debug?.returnValuesRaw ?? null,
+                        reason: errorMessage,
                     });
                     setTxStatus("FAILED");
-                    setMessage("Preview failed");
+                    setMessage("Odds unavailable. Please refresh or wait.");
                     return;
                 }
                 requestPostTransactionBalanceRefresh("binary:mint-failed");
@@ -1044,12 +1164,16 @@ export function usePredictBinary(
             client,
             dAppKit,
             isBettingOpen,
+            isBusy,
             isTestnet,
             managerBalance,
             managerId,
             oracleTimestampMs,
             refresh,
+            restoreSidePositions,
             roundMarket,
+            upPreview,
+            downPreview,
             walletBalance,
         ],
     );
@@ -1094,47 +1218,94 @@ export function usePredictBinary(
                 setPosition(null);
                 await refresh();
             } catch (caught) {
-                console.error("Binary redeem failed:", caught);
                 redeemingRef.current = null;
+                if (isWalletUserRejection(caught)) {
+                    console.info(
+                        "Binary redeem transaction cancelled",
+                        readWalletCancellationDebug(caught),
+                    );
+                    setTxStatus("READY");
+                    setMessage("Transaction cancelled");
+                    return;
+                }
+                console.error("Binary redeem failed:", caught);
                 setTxStatus("FAILED");
                 setMessage(readErrorMessage(caught));
             }
         })();
     }, [address, client, dAppKit, isTestnet, managerId, market, position, refresh]);
 
-    return useMemo(
-        () => ({
+    return useMemo(() => {
+        const canTradeBase =
+            Boolean(address) && isTestnet && isBettingOpen && Boolean(market) && !isBusy;
+        let currentBetPreviewKey: string | null = null;
+        let hasPositiveAmount = false;
+        try {
+            const budget = parseTokenAmount(amount, PREDICT_BINARY_CONFIG.quoteDecimals).atomic;
+            hasPositiveAmount = budget > 0n;
+            if (market && hasPositiveAmount) {
+                currentBetPreviewKey = buildPreviewApiKey({
+                    market,
+                    budget,
+                    oracleTimestampMs,
+                });
+            }
+        } catch {
+            currentBetPreviewKey = null;
+            hasPositiveAmount = false;
+        }
+        const upAvailability = getBetAvailability({
+            canTrade: canTradeBase,
+            hasPositiveAmount,
+            state: upPreview,
+            expectedPreviewKey: currentBetPreviewKey,
+        });
+        const downAvailability = getBetAvailability({
+            canTrade: canTradeBase,
+            hasPositiveAmount,
+            state: downPreview,
+            expectedPreviewKey: currentBetPreviewKey,
+        });
+        return {
             amount,
             setAmount,
             txStatus,
             message,
             isBusy,
-            canTrade: Boolean(address) && isTestnet && isBettingOpen && Boolean(market) && !isBusy,
+            canTrade: canTradeBase,
+            canBetUp: upAvailability.canBet,
+            canBetDown: downAvailability.canBet,
+            oddsUnavailableLabel:
+                hasPositiveAmount && previewStatus === "ERROR"
+                    ? "Odds unavailable. Please wait or refresh."
+                    : null,
             position,
             lastMint,
             lastRedeem,
             lastEntryOdds,
             previewStatus,
-            upOdds: upPreview.preview
-                ? formatBinaryOddsFromQuantity(
-                      upPreview.preview.quantity,
-                      upPreview.preview.mintCost,
-                  )
-                : upPreview.status === "PREVIEWING"
-                  ? "Calculating..."
-                  : upPreview.status === "ERROR"
-                    ? "Odds unavailable"
-                    : "--",
-            downOdds: downPreview.preview
-                ? formatBinaryOddsFromQuantity(
-                      downPreview.preview.quantity,
-                      downPreview.preview.mintCost,
-                  )
-                : downPreview.status === "PREVIEWING"
-                  ? "Calculating..."
-                  : downPreview.status === "ERROR"
-                    ? "Odds unavailable"
-                    : "--",
+            upOdds:
+                upPreview.status === "READY" && upPreview.preview
+                    ? formatBinaryOddsFromQuantity(
+                          upPreview.preview.quantity,
+                          upPreview.preview.mintCost,
+                      )
+                    : upPreview.status === "PREVIEWING"
+                      ? "Calculating..."
+                      : upPreview.status === "ERROR"
+                        ? "Odds unavailable"
+                        : "--",
+            downOdds:
+                downPreview.status === "READY" && downPreview.preview
+                    ? formatBinaryOddsFromQuantity(
+                          downPreview.preview.quantity,
+                          downPreview.preview.mintCost,
+                      )
+                    : downPreview.status === "PREVIEWING"
+                      ? "Calculating..."
+                      : downPreview.status === "ERROR"
+                        ? "Odds unavailable"
+                        : "--",
             costLabel: lastMint
                 ? `${formatTokenAmount(lastMint.cost, PREDICT_BINARY_CONFIG.quoteDecimals)} DUSDC`
                 : null,
@@ -1147,30 +1318,53 @@ export function usePredictBinary(
                 position && position.cost > 0n
                     ? `${formatTokenAmount(position.cost, PREDICT_BINARY_CONFIG.quoteDecimals)} DUSDC`
                     : null,
+            sidePositionLabels: {
+                UP:
+                    sidePositions.UP && sidePositions.UP.cost > 0n
+                        ? {
+                              bet: `${formatTokenAmount(
+                                  sidePositions.UP.cost,
+                                  PREDICT_BINARY_CONFIG.quoteDecimals,
+                              )} DUSDC`,
+                              entryOdds: sidePositions.UP.entryOdds,
+                          }
+                        : null,
+                DOWN:
+                    sidePositions.DOWN && sidePositions.DOWN.cost > 0n
+                        ? {
+                              bet: `${formatTokenAmount(
+                                  sidePositions.DOWN.cost,
+                                  PREDICT_BINARY_CONFIG.quoteDecimals,
+                              )} DUSDC`,
+                              entryOdds: sidePositions.DOWN.entryOdds,
+                          }
+                        : null,
+            },
             payoutLabel: lastRedeem
                 ? `${formatTokenAmount(lastRedeem.payout, PREDICT_BINARY_CONFIG.quoteDecimals)} DUSDC`
                 : null,
             explorerUrl: lastDigest ? predictBinaryExplorerUrl(lastDigest) : null,
             placeBet,
-        }),
-        [
-            address,
-            amount,
-            isBettingOpen,
-            isBusy,
-            isTestnet,
-            lastDigest,
-            lastEntryOdds,
-            lastMint,
-            lastRedeem,
-            market,
-            message,
-            placeBet,
-            position,
-            previewStatus,
-            txStatus,
-            upPreview,
-            downPreview,
-        ],
-    );
+        };
+    }, [
+        address,
+        amount,
+        isBettingOpen,
+        isBusy,
+        isTestnet,
+        lastDigest,
+        lastEntryOdds,
+        lastMint,
+        lastRedeem,
+        market,
+        message,
+        oracleTimestampMs,
+        placeBet,
+        position,
+        previewStatus,
+        sidePositions,
+        txStatus,
+        upPreview,
+        downPreview,
+    ]);
 }

@@ -21,6 +21,28 @@ export interface RedeemBinaryTransactionInput extends BinaryMarketKeyInput {
     quantity: bigint;
 }
 
+export interface RangeKeyInput {
+    oracleId: string;
+    expiryMs: number;
+    lowerStrike: bigint;
+    higherStrike: bigint;
+}
+
+export interface MintRangeTransactionInput extends RangeKeyInput {
+    sender: string;
+    managerId: string;
+    quantity: bigint;
+    depositAmount: bigint;
+}
+
+export interface MintBreakTransactionInput extends RangeKeyInput {
+    sender: string;
+    managerId: string;
+    lowerQuantity: bigint;
+    upperQuantity: bigint;
+    depositAmount: bigint;
+}
+
 export interface MoveCallSummary {
     target: string;
     typeArguments: string[];
@@ -38,6 +60,18 @@ function addMarketKey(tx: Transaction, market: BinaryMarketKeyInput) {
             tx.pure.u64(market.expiryMs),
             tx.pure.u64(market.strike),
             tx.pure.bool(market.isUp),
+        ],
+    });
+}
+
+function addRangeKey(tx: Transaction, range: RangeKeyInput) {
+    return tx.moveCall({
+        target: target("range_key", "new"),
+        arguments: [
+            tx.pure.id(range.oracleId),
+            tx.pure.u64(range.expiryMs),
+            tx.pure.u64(range.lowerStrike),
+            tx.pure.u64(range.higherStrike),
         ],
     });
 }
@@ -115,6 +149,27 @@ export function createReadBinaryPositionTransaction({
     return tx;
 }
 
+export function createPreviewRangeTradeAmountsTransaction({
+    sender,
+    quantity,
+    ...range
+}: RangeKeyInput & { sender: string; quantity: bigint }): Transaction {
+    const tx = new Transaction();
+    tx.setSender(sender);
+    const key = addRangeKey(tx, range);
+    tx.moveCall({
+        target: target("predict", "get_range_trade_amounts"),
+        arguments: [
+            tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
+            tx.object(range.oracleId),
+            key,
+            tx.pure.u64(quantity),
+            tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
+        ],
+    });
+    return tx;
+}
+
 export function createMintBinaryTransaction(input: MintBinaryTransactionInput): Transaction {
     const tx = new Transaction();
     tx.setSender(input.sender);
@@ -148,6 +203,96 @@ export function createMintBinaryTransaction(input: MintBinaryTransactionInput): 
     return tx;
 }
 
+export function createMintRangeTransaction(input: MintRangeTransactionInput): Transaction {
+    const tx = new Transaction();
+    tx.setSender(input.sender);
+
+    if (input.depositAmount > 0n) {
+        const depositCoin = coinWithBalance({
+            balance: input.depositAmount,
+            type: PREDICT_BINARY_CONFIG.quoteCoinType,
+        });
+        tx.moveCall({
+            target: target("predict_manager", "deposit"),
+            typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+            arguments: [tx.object(input.managerId), depositCoin],
+        });
+    }
+
+    const key = addRangeKey(tx, input);
+    tx.moveCall({
+        target: target("predict", "mint_range"),
+        typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+        arguments: [
+            tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
+            tx.object(input.managerId),
+            tx.object(input.oracleId),
+            key,
+            tx.pure.u64(input.quantity),
+            tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
+        ],
+    });
+
+    return tx;
+}
+
+export function createMintBreakTransaction(input: MintBreakTransactionInput): Transaction {
+    const tx = new Transaction();
+    tx.setSender(input.sender);
+
+    if (input.depositAmount > 0n) {
+        const depositCoin = coinWithBalance({
+            balance: input.depositAmount,
+            type: PREDICT_BINARY_CONFIG.quoteCoinType,
+        });
+        tx.moveCall({
+            target: target("predict_manager", "deposit"),
+            typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+            arguments: [tx.object(input.managerId), depositCoin],
+        });
+    }
+
+    const lowerKey = addMarketKey(tx, {
+        oracleId: input.oracleId,
+        expiryMs: input.expiryMs,
+        strike: input.lowerStrike,
+        isUp: false,
+    });
+    tx.moveCall({
+        target: target("predict", "mint"),
+        typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+        arguments: [
+            tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
+            tx.object(input.managerId),
+            tx.object(input.oracleId),
+            lowerKey,
+            tx.pure.u64(input.lowerQuantity),
+            tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
+        ],
+    });
+
+    const upperKey = addMarketKey(tx, {
+        oracleId: input.oracleId,
+        expiryMs: input.expiryMs,
+        strike: input.higherStrike,
+        isUp: true,
+    });
+    tx.moveCall({
+        target: target("predict", "mint"),
+        typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+        arguments: [
+            tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
+            tx.object(input.managerId),
+            tx.object(input.oracleId),
+            upperKey,
+            tx.pure.u64(input.upperQuantity),
+            tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
+        ],
+    });
+
+    return tx;
+}
+
 export function describeMintBinaryMoveCalls(input: MintBinaryTransactionInput): MoveCallSummary[] {
     const calls: MoveCallSummary[] = [];
     if (input.depositAmount > 0n) {
@@ -172,6 +317,64 @@ export function describeMintBinaryMoveCalls(input: MintBinaryTransactionInput): 
     return calls;
 }
 
+export function describeMintRangeMoveCalls(input: MintRangeTransactionInput): MoveCallSummary[] {
+    const calls: MoveCallSummary[] = [];
+    if (input.depositAmount > 0n) {
+        calls.push({
+            target: target("predict_manager", "deposit"),
+            typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+            purpose: "deposit DUSDC for Range mint",
+        });
+    }
+    calls.push(
+        {
+            target: target("range_key", "new"),
+            typeArguments: [],
+            purpose: "build RangeKey",
+        },
+        {
+            target: target("predict", "mint_range"),
+            typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+            purpose: "mint Range position",
+        },
+    );
+    return calls;
+}
+
+export function describeMintBreakMoveCalls(input: MintBreakTransactionInput): MoveCallSummary[] {
+    const calls: MoveCallSummary[] = [];
+    if (input.depositAmount > 0n) {
+        calls.push({
+            target: target("predict_manager", "deposit"),
+            typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+            purpose: "deposit DUSDC for two-leg Break mint",
+        });
+    }
+    calls.push(
+        {
+            target: target("market_key", "new"),
+            typeArguments: [],
+            purpose: "build lower DOWN MarketKey",
+        },
+        {
+            target: target("predict", "mint"),
+            typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+            purpose: "mint lower break DOWN leg",
+        },
+        {
+            target: target("market_key", "new"),
+            typeArguments: [],
+            purpose: "build upper UP MarketKey",
+        },
+        {
+            target: target("predict", "mint"),
+            typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+            purpose: "mint upper break UP leg",
+        },
+    );
+    return calls;
+}
+
 export function createRedeemBinaryTransaction(input: RedeemBinaryTransactionInput): Transaction {
     const tx = new Transaction();
     tx.setSender(input.sender);
@@ -189,6 +392,58 @@ export function createRedeemBinaryTransaction(input: RedeemBinaryTransactionInpu
         ],
     });
     return tx;
+}
+
+export function createClaimBinaryPayoutTransaction(
+    input: RedeemBinaryTransactionInput,
+): Transaction {
+    const tx = new Transaction();
+    tx.setSender(input.sender);
+    const key = addMarketKey(tx, input);
+    tx.moveCall({
+        target: target("predict", "redeem_permissionless"),
+        typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+        arguments: [
+            tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
+            tx.object(input.managerId),
+            tx.object(input.oracleId),
+            key,
+            tx.pure.u64(input.quantity),
+            tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
+        ],
+    });
+    const coin = tx.moveCall({
+        target: target("predict_manager", "withdraw"),
+        typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+        arguments: [tx.object(input.managerId), tx.pure.u64(input.quantity)],
+    });
+    tx.transferObjects([coin], input.sender);
+    return tx;
+}
+
+export function describeClaimBinaryPayoutMoveCalls(): MoveCallSummary[] {
+    return [
+        {
+            target: target("market_key", "new"),
+            typeArguments: [],
+            purpose: "build Binary MarketKey",
+        },
+        {
+            target: target("predict", "redeem_permissionless"),
+            typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+            purpose: "redeem winning Binary position into PredictManager balance",
+        },
+        {
+            target: target("predict_manager", "withdraw"),
+            typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+            purpose: "withdraw redeemed DUSDC from PredictManager",
+        },
+        {
+            target: "transferObjects",
+            typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+            purpose: "transfer withdrawn DUSDC to wallet",
+        },
+    ];
 }
 
 export function createWithdrawManagerQuoteTransaction({

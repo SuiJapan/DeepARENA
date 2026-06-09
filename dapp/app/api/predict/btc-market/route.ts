@@ -59,6 +59,24 @@ interface MarketResponse {
         previousOracleStateSource?: string;
         previousOracleStateFetchError?: string;
         previousOracleObjectFetchError?: string;
+        searchedEventCount?: number;
+        searchedPages?: number;
+        targetOracleId?: string;
+        lastCursor?: unknown;
+        matchedOracleCreatedEventFound?: boolean;
+        matchedOracleId?: string | null;
+        exactMatchFound?: boolean;
+        fallbackCandidateFound?: boolean;
+        fallbackReason?: string;
+        fallbackOracleId?: string;
+        fallbackExpiry?: number;
+        fallbackUnderlyingAsset?: string;
+        lastSeenOracleId?: string | null;
+        parsedFieldNames?: string[];
+        gridFailureReason?: string;
+        gridSource?: string;
+        minStrikeRaw?: string;
+        tickSizeRaw?: string;
         settlementPriceRawShape?: string;
         settlementPriceParseError?: string | null;
         suiGetObjectCalled?: boolean;
@@ -74,6 +92,32 @@ interface OracleGrid {
     oracleId: string;
     minStrikeRaw: string;
     tickSizeRaw: string;
+    source: "oracle_created_exact" | "oracle_created_underlying_fallback";
+    fallbackOracleId?: string;
+    fallbackExpiryMs?: number;
+    fallbackUnderlyingAsset?: string;
+    debug: OracleGridSearchDebug;
+}
+
+interface OracleGridSearchDebug {
+    reason: string;
+    targetOracleId: string;
+    searchedEventCount: number;
+    searchedPages: number;
+    lastCursor: unknown;
+    matchedOracleCreatedEventFound: boolean;
+    matchedOracleId: string | null;
+    exactMatchFound: boolean;
+    fallbackCandidateFound: boolean;
+    fallbackReason?: string;
+    fallbackOracleId?: string;
+    fallbackExpiry?: number;
+    fallbackUnderlyingAsset?: string;
+    lastSeenOracleId: string | null;
+    parsedFieldNames: string[];
+    gridSource?: OracleGrid["source"];
+    minStrikeRaw?: string;
+    tickSizeRaw?: string;
 }
 
 interface OraclePrice {
@@ -95,7 +139,22 @@ interface OracleState {
     rawSettlementPricePathValue?: unknown;
 }
 
-type FetchResult<T> = { ok: true; value: T } | { ok: false; message: string };
+type FetchResult<T> =
+    | { ok: true; value: T }
+    | { ok: false; message: string; debug?: unknown };
+
+class OracleGridFetchError extends Error {
+    constructor(
+        message: string,
+        readonly debug: OracleGridSearchDebug,
+    ) {
+        super(message);
+        this.name = "OracleGridFetchError";
+    }
+}
+
+const oracleGridByOracleIdCache = new Map<string, OracleGrid>();
+const oracleGridByUnderlyingCache = new Map<string, OracleGrid>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -216,6 +275,12 @@ async function safeFetch<T>(read: () => Promise<T>): Promise<FetchResult<T>> {
         return {
             ok: false,
             message: caught instanceof Error ? caught.message : String(caught),
+            debug:
+                caught instanceof OracleGridFetchError
+                    ? caught.debug
+                    : isRecord(caught) && "debug" in caught
+                      ? caught.debug
+                      : undefined,
         };
     }
 }
@@ -265,16 +330,123 @@ function parsePrice(value: unknown): OraclePrice | null {
     }
 }
 
-function parseOracleGridEvent(value: unknown): OracleGrid | null {
-    if (!isRecord(value) || !isRecord(value.parsedJson)) {
+function readEventPayload(value: unknown): Record<string, unknown> | null {
+    if (!isRecord(value)) {
+        return null;
+    }
+    const payload = value.parsedJson ?? value.json ?? value.parsed_json;
+    if (!isRecord(payload)) {
+        return null;
+    }
+    if (isRecord(payload.fields)) {
+        return payload.fields;
+    }
+    return payload;
+}
+
+function readFlexibleField(
+    value: Record<string, unknown>,
+    fieldNames: readonly string[],
+): unknown {
+    for (const fieldName of fieldNames) {
+        if (fieldName in value) {
+            return value[fieldName];
+        }
+    }
+    return undefined;
+}
+
+function parseOracleIdField(value: unknown): string {
+    if (isRecord(value)) {
+        if ("id" in value) {
+            return readString(value.id, "oracle_id.id");
+        }
+        if ("bytes" in value) {
+            return readString(value.bytes, "oracle_id.bytes");
+        }
+        if ("fields" in value) {
+            return parseOracleIdField(value.fields);
+        }
+    }
+    return readString(value, "oracle_id");
+}
+
+function readFlexibleU64(value: unknown, fieldName: string): string {
+    return readStringOrNull(value, fieldName) ?? readU64String(value, fieldName);
+}
+
+function parseOracleGridEventCore(value: unknown): Omit<OracleGrid, "source" | "debug"> | null {
+    const payload = readEventPayload(value);
+    if (!payload) {
         return null;
     }
     try {
         return {
-            oracleId: readString(value.parsedJson.oracle_id, "oracle_id"),
-            minStrikeRaw: readU64String(value.parsedJson.min_strike, "min_strike"),
-            tickSizeRaw: readU64String(value.parsedJson.tick_size, "tick_size"),
+            oracleId: parseOracleIdField(
+                readFlexibleField(payload, ["oracle_id", "oracleId", "oracle"]),
+            ),
+            minStrikeRaw: readFlexibleU64(
+                readFlexibleField(payload, [
+                    "min_strike",
+                    "minStrike",
+                    "min_strike_raw",
+                    "minStrikeRaw",
+                ]),
+                "min_strike",
+            ),
+            tickSizeRaw: readFlexibleU64(
+                readFlexibleField(payload, [
+                    "tick_size",
+                    "tickSize",
+                    "tick_size_raw",
+                    "tickSizeRaw",
+                ]),
+                "tick_size",
+            ),
         };
+    } catch {
+        return null;
+    }
+}
+
+function parseOracleGridEvent(value: unknown): Omit<OracleGrid, "source" | "debug"> | null {
+    return parseOracleGridEventCore(value);
+}
+
+function parseOracleGridEventOracleId(value: unknown): string | null {
+    const payload = readEventPayload(value);
+    if (!payload) {
+        return null;
+    }
+    try {
+        return parseOracleIdField(readFlexibleField(payload, ["oracle_id", "oracleId", "oracle"]));
+    } catch {
+        return null;
+    }
+}
+
+function parseOracleGridEventUnderlyingAsset(value: unknown): string | null {
+    const payload = readEventPayload(value);
+    if (!payload) {
+        return null;
+    }
+    try {
+        return readString(
+            readFlexibleField(payload, ["underlying_asset", "underlyingAsset"]),
+            "underlying_asset",
+        );
+    } catch {
+        return null;
+    }
+}
+
+function parseOracleGridEventExpiryMs(value: unknown): number | null {
+    const payload = readEventPayload(value);
+    if (!payload) {
+        return null;
+    }
+    try {
+        return readPositiveInteger(readFlexibleField(payload, ["expiry", "expiryMs"]), "expiry");
     } catch {
         return null;
     }
@@ -420,8 +592,44 @@ async function fetchOracleObjectState(
     );
 }
 
-async function fetchOracleGrid(oracleId: string): Promise<OracleGrid> {
+async function fetchOracleGrid(targetOracle: OracleCandidate): Promise<OracleGrid> {
+    const oracleId = targetOracle.oracleId;
+    const exactCache = oracleGridByOracleIdCache.get(oracleId);
+    if (exactCache) {
+        return exactCache;
+    }
+    const underlyingCache = oracleGridByUnderlyingCache.get(PREDICT_BINARY_CONFIG.underlyingAsset);
+    if (underlyingCache) {
+        const cachedFallback: OracleGrid = {
+            ...underlyingCache,
+            oracleId,
+            source: "oracle_created_underlying_fallback",
+            debug: {
+                ...underlyingCache.debug,
+                reason: "GRID_FROM_UNDERLYING_CACHE",
+                targetOracleId: oracleId,
+                gridSource: "oracle_created_underlying_fallback",
+            },
+        };
+        oracleGridByOracleIdCache.set(oracleId, cachedFallback);
+        return cachedFallback;
+    }
     let cursor: unknown = null;
+    let searchedEventCount = 0;
+    let searchedPages = 0;
+    let lastCursor: unknown = null;
+    let matchedOracleCreatedEventFound = false;
+    let matchedOracleId: string | null = null;
+    let parsedFieldNames: string[] = [];
+    let failureReason = "Oracle strike grid was not found";
+    let fallbackCandidate:
+        | {
+              grid: Omit<OracleGrid, "source" | "debug">;
+              underlyingAsset: string;
+              expiryMs: number | null;
+          }
+        | null = null;
+    let fallbackDistance: bigint | null = null;
     for (let page = 0; page < 20; page += 1) {
         const result = await fetchJsonRpc("suix_queryEvents", [
             {
@@ -434,18 +642,132 @@ async function fetchOracleGrid(oracleId: string): Promise<OracleGrid> {
         if (!isRecord(result) || !Array.isArray(result.data)) {
             throw new Error("Invalid OracleCreated event response");
         }
+        searchedPages += 1;
         for (const item of result.data) {
+            searchedEventCount += 1;
+            const payload = readEventPayload(item);
+            if (payload) {
+                parsedFieldNames = Array.from(
+                    new Set([...parsedFieldNames, ...Object.keys(payload)]),
+                ).sort();
+            }
+            const eventOracleId = parseOracleGridEventOracleId(item);
+            if (eventOracleId) {
+                matchedOracleId = eventOracleId;
+            }
+            if (eventOracleId === oracleId) {
+                matchedOracleCreatedEventFound = true;
+            }
+            const underlyingAsset = parseOracleGridEventUnderlyingAsset(item);
+            const expiryMs = parseOracleGridEventExpiryMs(item);
             const grid = parseOracleGridEvent(item);
-            if (grid?.oracleId === oracleId) {
-                return grid;
+            if (!grid) {
+                if (eventOracleId === oracleId) {
+                    failureReason =
+                        "Matching OracleCreated event was found but min_strike/tick_size could not be parsed";
+                }
+                continue;
+            }
+            if (grid.oracleId === oracleId) {
+                matchedOracleId = grid.oracleId;
+                const debug: OracleGridSearchDebug = {
+                    reason: "GRID_FROM_EXACT_ORACLE_CREATED_EVENT",
+                    targetOracleId: oracleId,
+                    searchedEventCount,
+                    searchedPages,
+                    lastCursor,
+                    matchedOracleCreatedEventFound: true,
+                    matchedOracleId: grid.oracleId,
+                    exactMatchFound: true,
+                    fallbackCandidateFound: Boolean(fallbackCandidate),
+                    fallbackReason: undefined,
+                    lastSeenOracleId: grid.oracleId,
+                    parsedFieldNames,
+                    gridSource: "oracle_created_exact",
+                    minStrikeRaw: grid.minStrikeRaw,
+                    tickSizeRaw: grid.tickSizeRaw,
+                };
+                const exactGrid: OracleGrid = {
+                    ...grid,
+                    source: "oracle_created_exact",
+                    debug,
+                };
+                oracleGridByOracleIdCache.set(oracleId, exactGrid);
+                return exactGrid;
+            }
+            matchedOracleId = grid.oracleId;
+            if (underlyingAsset === PREDICT_BINARY_CONFIG.underlyingAsset) {
+                const distance =
+                    expiryMs === null
+                        ? null
+                        : BigInt(Math.abs(expiryMs - targetOracle.expiryMs));
+                if (
+                    !fallbackCandidate ||
+                    fallbackDistance === null ||
+                    (distance !== null && distance < fallbackDistance)
+                ) {
+                    fallbackCandidate = { grid, underlyingAsset, expiryMs };
+                    fallbackDistance = distance;
+                }
             }
         }
         if (result.hasNextPage !== true) {
+            failureReason = "OracleCreated event pagination ended before target oracle was found";
             break;
         }
         cursor = result.nextCursor;
+        lastCursor = cursor;
     }
-    throw new Error("Oracle strike grid was not found");
+    if (fallbackCandidate) {
+        const debug: OracleGridSearchDebug = {
+            reason: "GRID_FROM_UNDERLYING_FALLBACK",
+            targetOracleId: oracleId,
+            searchedEventCount,
+            searchedPages,
+            lastCursor,
+            matchedOracleCreatedEventFound,
+            matchedOracleId,
+            exactMatchFound: false,
+            fallbackCandidateFound: true,
+            fallbackReason:
+                "Exact OracleCreated event was not found in the searched window; using BTC underlying grid fallback",
+            fallbackOracleId: fallbackCandidate.grid.oracleId,
+            fallbackExpiry: fallbackCandidate.expiryMs ?? undefined,
+            fallbackUnderlyingAsset: fallbackCandidate.underlyingAsset,
+            lastSeenOracleId: matchedOracleId,
+            parsedFieldNames,
+            gridSource: "oracle_created_underlying_fallback",
+            minStrikeRaw: fallbackCandidate.grid.minStrikeRaw,
+            tickSizeRaw: fallbackCandidate.grid.tickSizeRaw,
+        };
+        const fallbackGrid: OracleGrid = {
+            oracleId,
+            minStrikeRaw: fallbackCandidate.grid.minStrikeRaw,
+            tickSizeRaw: fallbackCandidate.grid.tickSizeRaw,
+            source: "oracle_created_underlying_fallback",
+            fallbackOracleId: fallbackCandidate.grid.oracleId,
+            fallbackExpiryMs: fallbackCandidate.expiryMs ?? undefined,
+            fallbackUnderlyingAsset: fallbackCandidate.underlyingAsset,
+            debug,
+        };
+        oracleGridByOracleIdCache.set(oracleId, fallbackGrid);
+        oracleGridByUnderlyingCache.set(PREDICT_BINARY_CONFIG.underlyingAsset, fallbackGrid);
+        return fallbackGrid;
+    }
+    throw new OracleGridFetchError(failureReason, {
+        reason: failureReason,
+        targetOracleId: oracleId,
+        searchedEventCount,
+        searchedPages,
+        lastCursor,
+        matchedOracleCreatedEventFound,
+        matchedOracleId,
+        exactMatchFound: false,
+        fallbackCandidateFound: false,
+        fallbackReason: "No BTC OracleCreated event with parseable min_strike/tick_size was found",
+        lastSeenOracleId: matchedOracleId,
+        parsedFieldNames,
+    });
 }
 
 function toSummary(oracle: OracleCandidate | null): OracleSummary | null {
@@ -509,6 +831,7 @@ function roundDataErrorResponse({
     previousOracleState,
     reason,
     originalErrorMessage,
+    debug,
 }: {
     currentOracle: OracleCandidate;
     previousOracle: OracleCandidate | null;
@@ -518,6 +841,7 @@ function roundDataErrorResponse({
     previousOracleState: OracleState | null;
     reason: string;
     originalErrorMessage?: string;
+    debug?: Partial<NonNullable<MarketResponse["debug"]>>;
 }): MarketResponse {
     return {
         state: "ROUND_DATA_ERROR",
@@ -526,7 +850,7 @@ function roundDataErrorResponse({
         nextOracle: toSummary(nextOracle),
         round: null,
         message: "Failed to build round data",
-        debug: { reason, originalErrorMessage },
+        debug: { ...debug, reason, originalErrorMessage },
     };
 }
 
@@ -592,7 +916,7 @@ export async function GET(): Promise<NextResponse<MarketResponse>> {
             previousOracleStateResult,
             previousOracleObjectStateResult,
         ] = await Promise.all([
-            safeFetch(() => fetchOracleGrid(currentOracle.oracleId)),
+            safeFetch(() => fetchOracleGrid(currentOracle)),
             safeFetch(() => fetchOraclePrices(currentOracle.oracleId)),
             safeFetch(() => fetchOracleState(previousOracle.oracleId)),
             safeFetch(() => fetchOracleObjectState(previousOracle.oracleId, previousOracle.lifecycle)),
@@ -677,6 +1001,7 @@ export async function GET(): Promise<NextResponse<MarketResponse>> {
             );
         }
         if (!grid) {
+            const gridDebug = !gridResult.ok && isRecord(gridResult.debug) ? gridResult.debug : {};
             return NextResponse.json(
                 roundDataErrorResponse({
                     currentOracle,
@@ -687,7 +1012,73 @@ export async function GET(): Promise<NextResponse<MarketResponse>> {
                     previousOracleState,
                     reason: "STRIKE_GRID_UNAVAILABLE",
                     originalErrorMessage: gridResult.ok ? undefined : gridResult.message,
+                    debug: {
+                        searchedEventCount:
+                            typeof gridDebug.searchedEventCount === "number"
+                                ? gridDebug.searchedEventCount
+                                : undefined,
+                        searchedPages:
+                            typeof gridDebug.searchedPages === "number"
+                                ? gridDebug.searchedPages
+                                : undefined,
+                        targetOracleId:
+                            typeof gridDebug.targetOracleId === "string"
+                                ? gridDebug.targetOracleId
+                                : currentOracle.oracleId,
+                        lastCursor: gridDebug.lastCursor,
+                        matchedOracleCreatedEventFound:
+                            typeof gridDebug.matchedOracleCreatedEventFound === "boolean"
+                                ? gridDebug.matchedOracleCreatedEventFound
+                                : undefined,
+                        matchedOracleId:
+                            typeof gridDebug.matchedOracleId === "string"
+                                ? gridDebug.matchedOracleId
+                                : null,
+                        exactMatchFound:
+                            typeof gridDebug.exactMatchFound === "boolean"
+                                ? gridDebug.exactMatchFound
+                                : undefined,
+                        fallbackCandidateFound:
+                            typeof gridDebug.fallbackCandidateFound === "boolean"
+                                ? gridDebug.fallbackCandidateFound
+                                : undefined,
+                        fallbackReason:
+                            typeof gridDebug.fallbackReason === "string"
+                                ? gridDebug.fallbackReason
+                                : undefined,
+                        fallbackOracleId:
+                            typeof gridDebug.fallbackOracleId === "string"
+                                ? gridDebug.fallbackOracleId
+                                : undefined,
+                        fallbackExpiry:
+                            typeof gridDebug.fallbackExpiry === "number"
+                                ? gridDebug.fallbackExpiry
+                                : undefined,
+                        fallbackUnderlyingAsset:
+                            typeof gridDebug.fallbackUnderlyingAsset === "string"
+                                ? gridDebug.fallbackUnderlyingAsset
+                                : undefined,
+                        lastSeenOracleId:
+                            typeof gridDebug.lastSeenOracleId === "string"
+                                ? gridDebug.lastSeenOracleId
+                                : null,
+                        parsedFieldNames: Array.isArray(gridDebug.parsedFieldNames)
+                            ? gridDebug.parsedFieldNames.filter(
+                                  (fieldName: unknown): fieldName is string =>
+                                      typeof fieldName === "string",
+                              )
+                            : undefined,
+                        gridFailureReason:
+                            typeof gridDebug.reason === "string" ? gridDebug.reason : undefined,
+                        gridSource:
+                            typeof gridDebug.gridSource === "string"
+                                ? gridDebug.gridSource
+                                : undefined,
+                    },
                 }),
+                {
+                    status: 200,
+                },
             );
         }
         if (!previousOracleState) {
@@ -783,12 +1174,16 @@ export async function GET(): Promise<NextResponse<MarketResponse>> {
         });
 
         if (process.env.NODE_ENV !== "production") {
-            console.info("Predict BTC round lock", {
-                oracleId: currentOracle.oracleId,
-                expiryMs: currentOracle.expiryMs,
-                roundOpenMs,
-                previousOracleId: previousOracle?.oracleId ?? null,
-                previousOracleExpiryMs: previousOracle?.expiryMs ?? null,
+                console.info("Predict BTC round lock", {
+                    oracleId: currentOracle.oracleId,
+                    expiryMs: currentOracle.expiryMs,
+                    gridSource: grid.source,
+                    fallbackOracleId: grid.fallbackOracleId ?? null,
+                    fallbackExpiryMs: grid.fallbackExpiryMs ?? null,
+                    fallbackUnderlyingAsset: grid.fallbackUnderlyingAsset ?? null,
+                    roundOpenMs,
+                    previousOracleId: previousOracle?.oracleId ?? null,
+                    previousOracleExpiryMs: previousOracle?.expiryMs ?? null,
                 previousOracleLifecycle: previousOracleState.lifecycle,
                 previousOracleSettlementPriceRaw: previousOracleState.settlementPriceRaw,
                 priceHistoryCount: prices?.length ?? 0,
@@ -822,6 +1217,25 @@ export async function GET(): Promise<NextResponse<MarketResponse>> {
             },
             debug: {
                 reason: "ROUND_READY",
+                gridSource: grid.source,
+                targetOracleId: currentOracle.oracleId,
+                exactMatchFound: grid.source === "oracle_created_exact",
+                fallbackCandidateFound: grid.source === "oracle_created_underlying_fallback",
+                fallbackReason:
+                    grid.source === "oracle_created_underlying_fallback"
+                        ? grid.debug.fallbackReason
+                        : undefined,
+                fallbackOracleId: grid.fallbackOracleId,
+                fallbackExpiry: grid.fallbackExpiryMs,
+                fallbackUnderlyingAsset: grid.fallbackUnderlyingAsset,
+                searchedEventCount: grid.debug.searchedEventCount,
+                searchedPages: grid.debug.searchedPages,
+                matchedOracleCreatedEventFound: grid.debug.matchedOracleCreatedEventFound,
+                matchedOracleId: grid.debug.matchedOracleId,
+                lastSeenOracleId: grid.debug.lastSeenOracleId,
+                parsedFieldNames: grid.debug.parsedFieldNames,
+                minStrikeRaw: grid.minStrikeRaw,
+                tickSizeRaw: grid.tickSizeRaw,
                 previousOracleStateSource: previousOracleState.source,
                 previousOracleStateFetchError: previousOracleStateResult.ok
                     ? undefined
