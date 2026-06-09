@@ -201,7 +201,7 @@ function formatRangeLabel(lower: bigint, higher: bigint): string {
 function settledPriceForPosition(
     position: Pick<PortfolioPosition, "oracleId" | "expiryMs">,
     roundMarket: PredictRoundMarket | null,
-): bigint | null {
+): { price: bigint | null; lifecycle: string | null } {
     const candidates = [
         roundMarket?.previousOracle ?? null,
         roundMarket?.currentOracle ?? null,
@@ -211,9 +211,12 @@ function settledPriceForPosition(
             candidate.oracleId === position.oracleId && candidate.expiryMs === position.expiryMs,
     );
     if (!oracle || oracle.lifecycle !== "settled" || !("settlementPriceRaw" in oracle)) {
-        return null;
+        return { price: null, lifecycle: oracle?.lifecycle ?? null };
     }
-    return oracle.settlementPriceRaw ? BigInt(oracle.settlementPriceRaw) : null;
+    return {
+        price: oracle.settlementPriceRaw ? BigInt(oracle.settlementPriceRaw) : null,
+        lifecycle: oracle.lifecycle,
+    };
 }
 
 function buildPositions({
@@ -272,7 +275,8 @@ function buildPositions({
     const nowMs = Date.now();
     const claimed = new Set(claimedKeys);
     for (const position of grouped.values()) {
-        position.settlementPrice = settledPriceForPosition(position, roundMarket);
+        const settlement = settledPriceForPosition(position, roundMarket);
+        position.settlementPrice = settlement.price;
         position.redeemQuantity =
             position.totalQuantity > position.redeemedQuantity
                 ? position.totalQuantity - position.redeemedQuantity
@@ -296,7 +300,10 @@ function buildPositions({
             continue;
         }
         if (position.settlementPrice === null) {
-            position.status = "Settlement pending";
+            position.status =
+                settlement.lifecycle && settlement.lifecycle !== "settled"
+                    ? "Settlement pending"
+                    : "Status unknown";
             position.canRedeem = false;
             continue;
         }
@@ -389,11 +396,7 @@ function buildBreakGroups(events: MintedPositionEvent[]): Map<
 }
 
 function isCurrentPosition(position: PortfolioPosition): boolean {
-    return (
-        position.status === "Open" ||
-        position.status === "Settlement pending" ||
-        position.status === "Status unknown"
-    );
+    return position.expiryMs > Date.now() && position.status === "Open";
 }
 
 function statusClass(status: BinaryPositionStatus): string {
@@ -705,7 +708,7 @@ export function BinaryPortfolioSection({
                 oddsCost: event.cost,
                 betCost: event.cost,
                 payoutLabel: formatDUSDC(event.quantity),
-                status: Date.now() < event.expiryMs ? "Open" : "Settlement pending",
+                status: Date.now() < event.expiryMs ? "Open" : "Status unknown",
                 actionDigest: event.digest,
                 binaryPosition: null,
                 canShowRedeem: false,
@@ -721,7 +724,7 @@ export function BinaryPortfolioSection({
                 oddsCost: group.totalCost,
                 betCost: group.totalCost,
                 payoutLabel: formatDUSDC(group.effectivePayout),
-                status: Date.now() < group.lower.expiryMs ? "Open" : "Settlement pending",
+                status: Date.now() < group.lower.expiryMs ? "Open" : "Status unknown",
                 actionDigest: group.lower.digest,
                 binaryPosition: null,
                 canShowRedeem: false,

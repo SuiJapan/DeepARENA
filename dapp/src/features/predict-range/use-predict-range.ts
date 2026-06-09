@@ -94,10 +94,10 @@ interface RangePreviewState {
 
 interface SelectedRangeCandidate {
     market: RangeMarket;
-    rangePreview: RangePreview;
-    rangePreviewKey: string;
-    breakPreview: BreakPreview;
-    breakPreviewKey: string;
+    rangePreview: RangePreview | null;
+    rangePreviewKey: string | null;
+    breakPreview: BreakPreview | null;
+    breakPreviewKey: string | null;
 }
 
 interface RangePreviewApiSuccess {
@@ -143,6 +143,19 @@ type RangePreviewApiResponse =
 
 const FIXED_RANGE_WIDTH_TICKS = 1000n;
 const RANGE_PREVIEW_COOLDOWN_MS = 30_000;
+
+interface CachedRangePreview {
+    preview: RangePreview;
+    previewKey: string;
+}
+
+type DirectionPreviewResult =
+    | { ok: true; preview: RangePreview; previewKey: string; fromCache: boolean }
+    | { ok: false; reason: string; fromCache: boolean };
+
+const successfulRangePreviewByKey = new Map<string, CachedRangePreview>();
+const inFlightRangePreviewByKey = new Map<string, Promise<DirectionPreviewResult>>();
+const rangePreviewCooldownByKey = new Map<string, number>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -260,6 +273,27 @@ function emptyPreview(status: RangePreviewStatus): RangePreviewState {
 
 function isRateLimitPreviewReason(reason: string): boolean {
     return reason.includes("429") || reason.toLowerCase().includes("rate limit");
+}
+
+function userFacingPreviewReason(reason: string): string {
+    return isRateLimitPreviewReason(reason) ? "Preview temporarily unavailable" : reason;
+}
+
+function userFacingAggregatePreviewReason(reason: string | null): string | null {
+    if (!reason) {
+        return null;
+    }
+    if (isRateLimitPreviewReason(reason) || reason.includes("Preview temporarily unavailable")) {
+        return "Preview temporarily unavailable";
+    }
+    return reason;
+}
+
+function readDirectionPreviewFailureReason(result: DirectionPreviewResult): string | null {
+    if (result.ok) {
+        return null;
+    }
+    return result.reason;
 }
 
 function formatRawPrice(raw: bigint): string {
@@ -394,6 +428,94 @@ function previewFromApi(result: RangePreviewApiSuccess | BreakPreviewApiSuccess)
     };
 }
 
+function previewFailureReason(
+    result: PromiseSettledResult<RangePreviewApiResponse>,
+    prefix: RangeDirection,
+): string {
+    if (result.status === "rejected") {
+        return `${prefix}_${result.reason instanceof Error ? result.reason.message : String(result.reason)}`;
+    }
+    if (result.value.ok) {
+        return `${prefix}_PREVIEW_NOT_MINTABLE`;
+    }
+    return `${prefix}_${result.value.reason}`;
+}
+
+async function previewRangeForDisplay({
+    address,
+    market,
+    budget,
+}: {
+    address: string;
+    market: RangeMarket;
+    budget: bigint;
+}): Promise<DirectionPreviewResult> {
+    const previewKey = buildPreviewKey({ direction: "RANGE", address, market, budget });
+    const cached = successfulRangePreviewByKey.get(previewKey);
+    if (cached) {
+        return {
+            ok: true,
+            preview: cached.preview,
+            previewKey: cached.previewKey,
+            fromCache: true,
+        };
+    }
+    const cooldownUntil = rangePreviewCooldownByKey.get(previewKey) ?? 0;
+    if (cooldownUntil > Date.now()) {
+        return { ok: false, reason: "Preview temporarily unavailable", fromCache: false };
+    }
+    const inFlight = inFlightRangePreviewByKey.get(previewKey);
+    if (inFlight) {
+        return inFlight;
+    }
+    const request = (async (): Promise<DirectionPreviewResult> => {
+        try {
+            const result = await fetchRangePreview({ direction: "RANGE", address, market, budget });
+            if (!result.ok) {
+                if (isRateLimitPreviewReason(result.reason)) {
+                    rangePreviewCooldownByKey.set(
+                        previewKey,
+                        Date.now() + RANGE_PREVIEW_COOLDOWN_MS,
+                    );
+                }
+                return {
+                    ok: false,
+                    reason: userFacingPreviewReason(result.reason),
+                    fromCache: false,
+                };
+            }
+            const preview = previewFromApi(result);
+            if (
+                preview.kind !== "RANGE" ||
+                preview.mintCost <= 0n ||
+                preview.mintCost > budget ||
+                preview.quantity <= 0n
+            ) {
+                return { ok: false, reason: "RANGE_PREVIEW_NOT_MINTABLE", fromCache: false };
+            }
+            const cachedPreview = { preview, previewKey: result.previewKey };
+            successfulRangePreviewByKey.set(previewKey, cachedPreview);
+            rangePreviewCooldownByKey.delete(previewKey);
+            return {
+                ok: true,
+                preview: cachedPreview.preview,
+                previewKey: cachedPreview.previewKey,
+                fromCache: false,
+            };
+        } catch (caught) {
+            const reason = caught instanceof Error ? caught.message : String(caught);
+            if (isRateLimitPreviewReason(reason)) {
+                rangePreviewCooldownByKey.set(previewKey, Date.now() + RANGE_PREVIEW_COOLDOWN_MS);
+            }
+            return { ok: false, reason: userFacingPreviewReason(reason), fromCache: false };
+        } finally {
+            inFlightRangePreviewByKey.delete(previewKey);
+        }
+    })();
+    inFlightRangePreviewByKey.set(previewKey, request);
+    return request;
+}
+
 async function previewCandidate({
     address,
     market,
@@ -406,47 +528,64 @@ async function previewCandidate({
     | {
           ok: true;
           market: RangeMarket;
-          rangePreview: RangePreview;
-          rangePreviewKey: string;
-          breakPreview: BreakPreview;
-          breakPreviewKey: string;
+          rangePreview: RangePreview | null;
+          rangePreviewKey: string | null;
+          breakPreview: BreakPreview | null;
+          breakPreviewKey: string | null;
+          failureReason: string | null;
       }
     | { ok: false; market: RangeMarket; reason: string }
 > {
-    const [rangeResult, breakResult] = await Promise.all([
-        fetchRangePreview({ direction: "RANGE", address, market, budget }),
+    const [rangeSettled, breakSettled] = await Promise.allSettled([
+        previewRangeForDisplay({ address, market, budget }),
         fetchRangePreview({ direction: "BREAK", address, market, budget }),
     ]);
-    if (!rangeResult.ok) {
-        return { ok: false, market, reason: `RANGE_${rangeResult.reason}` };
+    const failureReasons: string[] = [];
+    let rangePreview: RangePreview | null = null;
+    let rangePreviewKey: string | null = null;
+    let breakPreview: BreakPreview | null = null;
+    let breakPreviewKey: string | null = null;
+    if (rangeSettled.status === "fulfilled" && rangeSettled.value.ok) {
+        rangePreview = rangeSettled.value.preview;
+        rangePreviewKey = rangeSettled.value.previewKey;
+    } else if (rangeSettled.status === "fulfilled") {
+        failureReasons.push(
+            `RANGE_${readDirectionPreviewFailureReason(rangeSettled.value) ?? "PREVIEW_FAILED"}`,
+        );
+    } else {
+        failureReasons.push(
+            `RANGE_${rangeSettled.reason instanceof Error ? rangeSettled.reason.message : String(rangeSettled.reason)}`,
+        );
     }
-    if (!breakResult.ok) {
-        return { ok: false, market, reason: `BREAK_${breakResult.reason}` };
+    if (breakSettled.status === "fulfilled" && breakSettled.value.ok) {
+        const preview = previewFromApi(breakSettled.value);
+        if (
+            preview.kind === "BREAK" &&
+            preview.mintCost > 0n &&
+            preview.mintCost <= budget &&
+            preview.effectivePayout > 0n &&
+            preview.lowerLeg.quantity > 0n &&
+            preview.upperLeg.quantity > 0n
+        ) {
+            breakPreview = preview;
+            breakPreviewKey = breakSettled.value.previewKey;
+        } else {
+            failureReasons.push("BREAK_PREVIEW_NOT_MINTABLE");
+        }
+    } else {
+        failureReasons.push(previewFailureReason(breakSettled, "BREAK"));
     }
-    const rangePreview = previewFromApi(rangeResult);
-    const breakPreview = previewFromApi(breakResult);
-    if (rangePreview.kind !== "RANGE" || breakPreview.kind !== "BREAK") {
-        return { ok: false, market, reason: "PREVIEW_KIND_MISMATCH" };
-    }
-    if (
-        rangePreview.mintCost <= 0n ||
-        rangePreview.mintCost > budget ||
-        rangePreview.quantity <= 0n ||
-        breakPreview.mintCost <= 0n ||
-        breakPreview.mintCost > budget ||
-        breakPreview.effectivePayout <= 0n ||
-        breakPreview.lowerLeg.quantity <= 0n ||
-        breakPreview.upperLeg.quantity <= 0n
-    ) {
-        return { ok: false, market, reason: "PREVIEW_NOT_MINTABLE" };
+    if (!rangePreview && !breakPreview) {
+        return { ok: false, market, reason: failureReasons.join("; ") || "PREVIEW_NOT_MINTABLE" };
     }
     return {
         ok: true,
         market,
         rangePreview,
-        rangePreviewKey: rangeResult.previewKey,
+        rangePreviewKey,
         breakPreview,
-        breakPreviewKey: breakResult.previewKey,
+        breakPreviewKey,
+        failureReason: failureReasons.length > 0 ? failureReasons.join("; ") : null,
     };
 }
 
@@ -635,11 +774,13 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
               ? "Invalid amount"
               : !selectedCandidate
                 ? (previewState.error ?? "Odds unavailable")
-                : !previewReady
-                  ? "Preview is stale"
-                  : isBusy
-                    ? "Transaction pending"
-                    : null;
+                : !selectedDirectionPreview
+                  ? (previewState.error ?? "Odds unavailable")
+                  : !previewReady
+                    ? "Preview is stale"
+                    : isBusy
+                      ? "Transaction pending"
+                      : null;
 
     useEffect(() => {
         const round = roundMarket?.round;
@@ -802,21 +943,22 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                                   rangeWidthDisplay: formatRawPriceDelta(
                                       market.higherStrike - market.lowerStrike,
                                   ),
-                                  rangeMintCost: preview.rangePreview.mintCost.toString(),
-                                  rangeQuantity: preview.rangePreview.quantity.toString(),
-                                  rangeOdds: preview.rangePreview.liveOdds,
+                                  rangeMintCost: preview.rangePreview?.mintCost.toString() ?? null,
+                                  rangeQuantity: preview.rangePreview?.quantity.toString() ?? null,
+                                  rangeOdds: preview.rangePreview?.liveOdds ?? null,
                                   breakLowerMintCost:
-                                      preview.breakPreview.lowerLeg.mintCost.toString(),
+                                      preview.breakPreview?.lowerLeg.mintCost.toString() ?? null,
                                   breakLowerQuantity:
-                                      preview.breakPreview.lowerLeg.quantity.toString(),
+                                      preview.breakPreview?.lowerLeg.quantity.toString() ?? null,
                                   breakUpperMintCost:
-                                      preview.breakPreview.upperLeg.mintCost.toString(),
+                                      preview.breakPreview?.upperLeg.mintCost.toString() ?? null,
                                   breakUpperQuantity:
-                                      preview.breakPreview.upperLeg.quantity.toString(),
+                                      preview.breakPreview?.upperLeg.quantity.toString() ?? null,
                                   breakEffectivePayout:
-                                      preview.breakPreview.effectivePayout.toString(),
-                                  breakTotalCost: preview.breakPreview.mintCost.toString(),
-                                  breakEffectiveOdds: preview.breakPreview.liveOdds,
+                                      preview.breakPreview?.effectivePayout.toString() ?? null,
+                                  breakTotalCost: preview.breakPreview?.mintCost.toString() ?? null,
+                                  breakEffectiveOdds: preview.breakPreview?.liveOdds ?? null,
+                                  partialFailureReason: preview.failureReason,
                               }
                             : {
                                   displayPreviewKey,
@@ -848,12 +990,24 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                     }));
                     return;
                 }
-                cooldownByDisplayPreviewKeyRef.current.delete(displayPreviewKey);
-                lastSuccessfulDisplayPreviewKeyRef.current = displayPreviewKey;
+                const partialFailureReason = userFacingAggregatePreviewReason(
+                    preview.failureReason,
+                );
+                if (partialFailureReason && isRateLimitPreviewReason(preview.failureReason ?? "")) {
+                    cooldownByDisplayPreviewKeyRef.current.set(
+                        displayPreviewKey,
+                        Date.now() + RANGE_PREVIEW_COOLDOWN_MS,
+                    );
+                } else {
+                    cooldownByDisplayPreviewKeyRef.current.delete(displayPreviewKey);
+                }
+                if (!partialFailureReason) {
+                    lastSuccessfulDisplayPreviewKeyRef.current = displayPreviewKey;
+                }
                 setPreviewState({
                     status: "READY",
                     selected: preview,
-                    error: null,
+                    error: partialFailureReason,
                 });
             } catch (caught) {
                 if (previewRequestRef.current !== requestId) {
@@ -1104,25 +1258,30 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
             ? `${formatRawPrice(selectedCandidate.market.lowerStrike)} - ${formatRawPrice(
                   selectedCandidate.market.higherStrike,
               )}`
-            : "--",
-        rangeOdds: selectedCandidate
+            : fixedMarket
+              ? `${formatRawPrice(fixedMarket.lowerStrike)} - ${formatRawPrice(
+                    fixedMarket.higherStrike,
+                )}`
+              : "--",
+        rangeOdds: selectedCandidate?.rangePreview
             ? selectedCandidate.rangePreview.liveOdds
             : previewState.status === "PREVIEWING"
               ? "..."
               : "Unavailable",
-        breakOdds: selectedCandidate
+        breakOdds: selectedCandidate?.breakPreview
             ? selectedCandidate.breakPreview.liveOdds
             : previewState.status === "PREVIEWING"
               ? "..."
               : "Unavailable",
         expectedPayout:
-            selectedCandidate?.rangePreview.quantity && selectedCandidate.rangePreview.quantity > 0n
+            selectedCandidate?.rangePreview?.quantity &&
+            selectedCandidate.rangePreview.quantity > 0n
                 ? `${formatTokenAmount(
                       selectedCandidate.rangePreview.quantity,
                       PREDICT_BINARY_CONFIG.quoteDecimals,
                   )} DUSDC`
                 : null,
-        breakPayoutLabel: selectedCandidate
+        breakPayoutLabel: selectedCandidate?.breakPreview
             ? `Lower break payout ${formatTokenAmount(
                   selectedCandidate.breakPreview.lowerLeg.payout,
                   PREDICT_BINARY_CONFIG.quoteDecimals,
@@ -1150,10 +1309,10 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
             selectedHigherDisplay: selectedCandidate
                 ? formatRawPrice(selectedCandidate.market.higherStrike)
                 : null,
-            rangeOddsLabel: selectedCandidate?.rangePreview.liveOdds ?? "Unavailable",
-            breakOddsLabel: selectedCandidate?.breakPreview.liveOdds ?? "Unavailable",
-            rangeOdds: selectedCandidate?.rangePreview.liveOdds ?? "Unavailable",
-            breakOdds: selectedCandidate?.breakPreview.liveOdds ?? "Unavailable",
+            rangeOddsLabel: selectedCandidate?.rangePreview?.liveOdds ?? "Unavailable",
+            breakOddsLabel: selectedCandidate?.breakPreview?.liveOdds ?? "Unavailable",
+            rangeOdds: selectedCandidate?.rangePreview?.liveOdds ?? "Unavailable",
+            breakOdds: selectedCandidate?.breakPreview?.liveOdds ?? "Unavailable",
             previewKey: selectedPreviewKey,
             expectedPreviewKey,
             amountAtomic: budget?.toString() ?? null,
