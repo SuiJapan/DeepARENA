@@ -2,7 +2,7 @@ import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { NextResponse } from "next/server";
 import {
     previewTradeWithinBudgetFast,
-    previewRangeWithinBudgetServerOnly,
+    previewRangeWithinBudgetFast,
     type RangeTradePreview,
     type BudgetedTradePreview,
 } from "@/src/lib/predict-binary/client";
@@ -288,7 +288,7 @@ export async function POST(request: Request): Promise<NextResponse<RangePreviewR
             }
             return NextResponse.json(breakSuccessResponse({ previewKey, lowerLeg, upperLeg }));
         }
-        const preview = await previewRangeWithinBudgetServerOnly({
+        const preview = await previewRangeWithinBudgetFast({
             client: suiClient,
             sender: body.walletAddress,
             oracleId: body.oracleId,

@@ -1,0 +1,89 @@
+import { NextResponse } from "next/server";
+import { PREDICT_BINARY_CONFIG } from "@/src/lib/predict-binary/config";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+interface OracleStateResponse {
+    oracleId: string;
+    ok: boolean;
+    lifecycle: string | null;
+    settlementPriceRaw: string | null;
+    error: string | null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readStringOrNull(value: unknown): string | null {
+    return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function readSettlementPriceRaw(value: Record<string, unknown>): string | null {
+    for (const key of [
+        "settlement_price",
+        "settlementPrice",
+        "settlementPriceRaw",
+        "settlement_price_raw",
+    ]) {
+        const raw = readStringOrNull(value[key]);
+        if (raw !== null && /^(0|[1-9]\d*)$/.test(raw)) {
+            return raw;
+        }
+    }
+    return null;
+}
+
+async function fetchOracleState(oracleId: string): Promise<OracleStateResponse> {
+    try {
+        const response = await fetch(
+            `${PREDICT_BINARY_CONFIG.predictServerUrl}/oracles/${oracleId}/state`,
+            { cache: "no-store" },
+        );
+        if (!response.ok) {
+            return {
+                oracleId,
+                ok: false,
+                lifecycle: null,
+                settlementPriceRaw: null,
+                error: `Unexpected status code: ${response.status}`,
+            };
+        }
+        const payload = (await response.json()) as unknown;
+        if (!isRecord(payload)) {
+            return {
+                oracleId,
+                ok: false,
+                lifecycle: null,
+                settlementPriceRaw: null,
+                error: "Invalid oracle state response",
+            };
+        }
+        return {
+            oracleId,
+            ok: true,
+            lifecycle: readStringOrNull(payload.lifecycle),
+            settlementPriceRaw: readSettlementPriceRaw(payload),
+            error: null,
+        };
+    } catch (caught) {
+        return {
+            oracleId,
+            ok: false,
+            lifecycle: null,
+            settlementPriceRaw: null,
+            error: caught instanceof Error ? caught.message : String(caught),
+        };
+    }
+}
+
+export async function POST(request: Request): Promise<NextResponse<{ states: OracleStateResponse[] }>> {
+    const body = (await request.json()) as unknown;
+    const oracleIds = isRecord(body) && Array.isArray(body.oracleIds) ? body.oracleIds : [];
+    const uniqueOracleIds = [...new Set(oracleIds)]
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+        .slice(0, 100);
+    const states = await Promise.all(uniqueOracleIds.map(fetchOracleState));
+    return NextResponse.json({ states });
+}
