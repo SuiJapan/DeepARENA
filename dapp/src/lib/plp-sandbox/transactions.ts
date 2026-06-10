@@ -20,18 +20,28 @@ export function createPlpSandboxTransaction({
             ? coinWithBalance({ balance: amount, type: PLP_SANDBOX_CONFIG.dusdcCoinType })
             : coinWithBalance({ balance: amount, type: PLP_SANDBOX_CONFIG.plpCoinType });
 
-    tx.moveCall({
-        target:
-            action === "supply"
-                ? `${PLP_SANDBOX_CONFIG.sandboxPackageId}::plp_sandbox::provide_liquidity`
-                : `${PLP_SANDBOX_CONFIG.sandboxPackageId}::plp_sandbox::withdraw_liquidity`,
-        typeArguments: [PLP_SANDBOX_CONFIG.dusdcCoinType],
-        arguments: [
-            tx.object(PLP_SANDBOX_CONFIG.predictObjectId),
-            coin,
-            tx.object(PLP_SANDBOX_CONFIG.clockObjectId),
-        ],
-    });
+    if (action === "supply") {
+        tx.moveCall({
+            target: `${PLP_SANDBOX_CONFIG.sandboxPackageId}::plp_sandbox::provide_liquidity`,
+            typeArguments: [PLP_SANDBOX_CONFIG.dusdcCoinType],
+            arguments: [
+                tx.object(PLP_SANDBOX_CONFIG.predictObjectId),
+                coin,
+                tx.object(PLP_SANDBOX_CONFIG.clockObjectId),
+            ],
+        });
+    } else {
+        const [withdrawnCoin] = tx.moveCall({
+            target: `${PLP_SANDBOX_CONFIG.sandboxPackageId}::plp_sandbox::withdraw_liquidity`,
+            typeArguments: [PLP_SANDBOX_CONFIG.dusdcCoinType],
+            arguments: [
+                tx.object(PLP_SANDBOX_CONFIG.predictObjectId),
+                coin,
+                tx.object(PLP_SANDBOX_CONFIG.clockObjectId),
+            ],
+        });
+        tx.transferObjects([withdrawnCoin], tx.pure.address(sender));
+    }
 
     return tx;
 }

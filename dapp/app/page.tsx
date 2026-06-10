@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { RankingSection } from "@/src/features/deep-arena/ranking-section";
 import { useDeepArena } from "@/src/features/deep-arena/use-deep-arena";
 import { MarketChart } from "@/src/features/market/market-chart";
 import { useMarketStream } from "@/src/features/market/use-market-stream";
@@ -13,7 +14,7 @@ import {
     usePredictRound,
 } from "@/src/features/predict-round/use-predict-round";
 import { deepArenaMockConfig } from "@/src/lib/deep-arena/config";
-import type { EventLog, PlayerSummary, TokenAmount } from "@/src/lib/deep-arena/types";
+import type { PlayerSummary, TokenAmount } from "@/src/lib/deep-arena/types";
 import { formatMarketPrice, marketConfig } from "@/src/lib/market/config";
 import { WalletStatus } from "./wallet-status";
 
@@ -272,55 +273,17 @@ function Leaderboard({
     );
 }
 
-function HistoryTable({ events, title }: { events: EventLog[]; title: string }) {
-    return (
-        <section className="surface history">
-            <div className="section-title">
-                <div>
-                    <span>Mock activity</span>
-                    <h2>{title}</h2>
-                </div>
-                <strong>{events.length} records</strong>
-            </div>
-            <div className="history-list">
-                {events.map((event) => (
-                    <article key={event.id}>
-                        <span className={`history-mark ${event.kind}`} />
-                        <div>
-                            <strong>{event.title}</strong>
-                            <p>{event.detail}</p>
-                        </div>
-                        <small>
-                            {new Date(event.timestampMs).toLocaleString("en-US", {
-                                month: "short",
-                                day: "numeric",
-                                hour: "2-digit",
-                                minute: "2-digit",
-                            })}
-                        </small>
-                    </article>
-                ))}
-            </div>
-        </section>
-    );
-}
-
 function HomeContent() {
     const [view, setView] = useState<View>("arena");
     const { snapshot, error, isLoading } = useDeepArena();
     const predictRound = usePredictRound();
     const market = useMarketStream(predictRound.market?.currentOracle?.oracleId ?? null);
 
-    const currentPlayer = useMemo(
-        () => snapshot?.players.find(({ isCurrentPlayer }) => isCurrentPlayer),
-        [snapshot],
-    );
-
     if (isLoading || !snapshot) {
         return <main className="status-screen">Loading Deep Arena mock...</main>;
     }
 
-    const { players, events } = snapshot;
+    const { players } = snapshot;
 
     return (
         <main className="app-shell">
@@ -399,17 +362,7 @@ function HomeContent() {
                         <h1>Ranking</h1>
                         <p>Track the leaderboard and activity across the full arena.</p>
                     </div>
-                    <div className="ranking-grid">
-                        <Leaderboard
-                            players={players}
-                            currentScore={
-                                currentPlayer
-                                    ? `Your score ${formatAmount(currentPlayer.score)}`
-                                    : undefined
-                            }
-                        />
-                        <HistoryTable events={events} title="Arena history" />
-                    </div>
+                    <RankingSection />
                 </section>
             ) : null}
         </main>

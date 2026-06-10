@@ -664,6 +664,7 @@ export function BinaryPortfolioSection({
     const [error, setError] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [redeemingKey, setRedeemingKey] = useState<string | null>(null);
+    const [isCollecting, setIsCollecting] = useState(false);
     const [message, setMessage] = useState<string | null>(null);
     const [historyPage, setHistoryPage] = useState(1);
     const [expandedHistoryKeys, setExpandedHistoryKeys] = useState<Set<string>>(new Set());
@@ -957,6 +958,53 @@ export function BinaryPortfolioSection({
         safeHistoryPage * HISTORY_PAGE_SIZE,
     );
 
+    // manager に残っている DUSDC の合計（BET 時の超過入金や未引き出し payout の残滓）
+    const totalManagerBalance = useMemo(() => {
+        const balances = state?.managerBalances ?? {};
+        return Object.values(balances).reduce((total, balance) => total + balance, 0n);
+    }, [state]);
+
+    // 全 manager の残高をまとめて wallet へ引き出す（manager ごとに 1 TX）
+    const collectManagerBalances = async () => {
+        if (!address || !state) {
+            return;
+        }
+        const entries = Object.entries(state.managerBalances).filter(([, balance]) => balance > 0n);
+        if (entries.length === 0) {
+            return;
+        }
+        setIsCollecting(true);
+        setMessage("Confirm in wallet");
+        try {
+            let collected = 0n;
+            for (const [managerId, balance] of entries) {
+                const tx = createWithdrawManagerQuoteTransaction({
+                    sender: address,
+                    managerId,
+                    amount: balance,
+                });
+                console.info("Binary portfolio Collect transaction", {
+                    managerId,
+                    amount: balance.toString(),
+                });
+                const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+                const digest = readDigest(result);
+                await client.core.waitForTransaction({ digest, timeout: 60_000 });
+                collected += balance;
+            }
+            setMessage(`Collected ${formatDUSDC(collected)} to wallet`);
+            await refresh();
+        } catch (caught) {
+            if (isWalletUserRejection(caught)) {
+                setMessage("Transaction cancelled");
+                return;
+            }
+            setMessage(readWalletErrorMessage(caught));
+        } finally {
+            setIsCollecting(false);
+        }
+    };
+
     const redeem = async (position: PortfolioPosition) => {
         if (!address || !position.canRedeem || !position.redeemManagerId) {
             return;
@@ -1129,9 +1177,24 @@ export function BinaryPortfolioSection({
                         <span>BTC Binary</span>
                         <h2>Your history</h2>
                     </div>
-                    <strong>
-                        {history.length} records · Page {safeHistoryPage} / {historyPageCount}
-                    </strong>
+                    <div className="history-title-side">
+                        <strong>
+                            {history.length} records · Page {safeHistoryPage} / {historyPageCount}
+                        </strong>
+                        {totalManagerBalance > 0n ? (
+                            <button
+                                type="button"
+                                className="text-action"
+                                disabled={isCollecting}
+                                title="Withdraw all DUSDC remaining in your PredictManager (slippage deposits and unclaimed payouts) to your wallet"
+                                onClick={() => void collectManagerBalances()}
+                            >
+                                {isCollecting
+                                    ? "Collecting..."
+                                    : `Collect ${formatDUSDC(totalManagerBalance)}`}
+                            </button>
+                        ) : null}
+                    </div>
                 </div>
                 {history.length === 0 ? (
                     <div className="empty-state">No PositionMinted history in fetched events.</div>
