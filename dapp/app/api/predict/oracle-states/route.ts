@@ -24,6 +24,11 @@ function readU64String(value: unknown): string | null {
     return null;
 }
 
+// lifecycle は "active" / "settled" などの平文字列 — u64 バリデーションは不要
+function readLifecycle(value: unknown): string | null {
+    return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 function readStringOrNull(value: unknown): string | null {
     if (value === null || value === undefined) {
         return null;
@@ -85,11 +90,15 @@ async function fetchOracleState(oracleId: string): Promise<OracleStateResponse> 
                 error: "Invalid oracle state response",
             };
         }
+        // predict-server はオラクル情報を payload.oracle にネストして返す。
+        // フォールバックとして payload 直下も試みる（将来の API 変更に対応）。
+        const oracleData = isRecord(payload.oracle) ? payload.oracle : payload;
         return {
             oracleId,
             ok: true,
-            lifecycle: readStringOrNull(payload.lifecycle),
-            settlementPriceRaw: readSettlementPriceRaw(payload),
+            // predict-server は "status" キーを使用。"lifecycle" はフォールバック。
+            lifecycle: readLifecycle(oracleData.status ?? oracleData.lifecycle),
+            settlementPriceRaw: readSettlementPriceRaw(oracleData),
             error: null,
         };
     } catch (caught) {

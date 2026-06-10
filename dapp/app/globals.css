@@ -1456,6 +1456,62 @@ button:disabled {
     text-transform: uppercase;
 }
 
+.accordion-chevron {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--muted);
+    font-size: 9px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.history-accordion {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 8px 16px;
+    padding: 12px 4px 8px;
+    border-top: 1px solid var(--line);
+    background: color-mix(in srgb, var(--line) 14%, transparent);
+}
+
+.history-accordion-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.history-accordion-field > span {
+    color: var(--muted);
+    font-size: 9px;
+    text-transform: uppercase;
+}
+
+.history-accordion-field > small {
+    font-size: 8px;
+    font-family: var(--font-mono);
+    color: inherit;
+    word-break: break-all;
+}
+
+.history-accordion-claim {
+    grid-column: 1 / -1;
+    padding-top: 4px;
+}
+
+.status-label.status-win {
+    color: var(--green);
+}
+
+.status-label.status-lose {
+    color: var(--muted);
+}
+
+.status-label.status-settling {
+    color: var(--yellow, var(--muted));
+}
+
 .binary-history-pagination {
     display: flex;
     align-items: center;
