@@ -15,12 +15,15 @@ export function calcFee(mintCost: bigint, feeBps: number): bigint {
 
 /**
  * maxTotalCost を計算する。
- * mintCost + fee に 1% スリッページバッファを加算して切り上げる。
+ * mintCost + fee に 10% スリッページバッファを加算して切り上げる。
+ * preview とウォレット承認の間に ask 価格が動くため、バッファが小さいと
+ * mint 内部の出金が残高不足で abort する（実測で数分間に ±13% の変動を確認）。
+ * 超過入金分は manager に残り、Portfolio の Collect ボタンで回収できる。
  */
 export function calcMaxTotalCost(mintCost: bigint, feeBps: number): bigint {
     const fee = calcFee(mintCost, feeBps);
     const base = mintCost + fee;
-    return base + (base + 99n) / 100n; // +1% buffer (round up)
+    return base + (base + 9n) / 10n; // +10% buffer (round up)
 }
 
 export interface BinaryMarketKeyInput {

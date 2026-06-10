@@ -12,12 +12,14 @@ import {
     type RangeMintEvent,
     type RedeemedPositionEvent,
     readDigest,
+    readManagerBalance,
     readRedeemEvent,
 } from "@/src/lib/predict-binary/client";
 import { PREDICT_BINARY_CONFIG, predictBinaryExplorerUrl } from "@/src/lib/predict-binary/config";
 import { formatBinaryOddsFromQuantity } from "@/src/lib/predict-binary/odds";
 import {
     createClaimBinaryPayoutTransaction,
+    createWithdrawManagerQuoteTransaction,
     describeClaimBinaryPayoutMoveCalls,
 } from "@/src/lib/predict-binary/transactions";
 import {
@@ -29,7 +31,8 @@ import {
 type PortfolioType = "Binary" | "Range" | "Break";
 type PortfolioSide = "UP" | "DOWN" | "RANGE" | "BREAK";
 type BinarySide = "UP" | "DOWN";
-type BinaryPositionStatus = "Open" | "Claim" | "Claimed" | "Lose" | "Pending";
+// Pending/Claim を廃止: 満期後 settlement 待ちは Settling、勝ち未 claim は Win
+type BinaryPositionStatus = "Open" | "Settling" | "Win" | "Claimed" | "Lose";
 
 interface OracleSettlementState {
     lifecycle: string | null;
@@ -46,10 +49,13 @@ interface PortfolioPosition {
     totalCost: bigint;
     totalQuantity: bigint;
     redeemedQuantity: bigint;
+    redeemedPayout: bigint;
     managerIds: string[];
     status: BinaryPositionStatus;
     settlementPrice: bigint | null;
     canRedeem: boolean;
+    // "redeem": 未 redeem 分を redeem + withdraw で wallet へ（Case A）
+    claimKind: "redeem" | null;
     redeemQuantity: bigint;
     redeemManagerId: string | null;
 }
@@ -60,6 +66,7 @@ interface BinaryPortfolioState {
     redeemed: RedeemedPositionEvent[];
     claimedKeys: string[];
     oracleSettlements: Record<string, OracleSettlementState>;
+    managerBalances: Record<string, bigint>;
     mintedPagesRead: number;
     rangePagesRead: number;
     redeemedPagesRead: number;
@@ -95,7 +102,11 @@ interface DisplayHistoryItem {
     status: BinaryPositionStatus | "Unknown";
     actionDigest: string | null;
     binaryPosition: PortfolioPosition | null;
-    canShowRedeem: boolean;
+    // アコーディオン詳細用
+    oracleId: string;
+    isUp: boolean | null;
+    settlementLifecycle: string | null;
+    settlementPriceLabel: string | null;
 }
 
 const MINTED_EVENT_MAX_PAGES = 40;
@@ -233,12 +244,14 @@ function buildPositions({
     redeemed,
     claimedKeys,
     oracleSettlements,
+    managerBalances,
     roundMarket,
 }: {
     minted: MintedPositionEvent[];
     redeemed: RedeemedPositionEvent[];
     claimedKeys: string[];
     oracleSettlements: Record<string, OracleSettlementState>;
+    managerBalances: Record<string, bigint>;
     roundMarket: PredictRoundMarket | null;
 }): PortfolioPosition[] {
     const grouped = new Map<string, PortfolioPosition>();
@@ -256,10 +269,12 @@ function buildPositions({
                 totalCost: event.cost,
                 totalQuantity: event.quantity,
                 redeemedQuantity: 0n,
+                redeemedPayout: 0n,
                 managerIds: [event.managerId],
-                status: "Pending",
+                status: "Settling",
                 settlementPrice: null,
                 canRedeem: false,
+                claimKind: null,
                 redeemQuantity: 0n,
                 redeemManagerId: event.managerId,
             });
@@ -279,6 +294,7 @@ function buildPositions({
             continue;
         }
         current.redeemedQuantity += event.quantity;
+        current.redeemedPayout += event.payout;
     }
 
     const nowMs = Date.now();
@@ -293,13 +309,10 @@ function buildPositions({
         position.redeemManagerId =
             position.managerIds.length === 1 ? (position.managerIds[0] ?? null) : null;
 
+        // CLAIMED は「wallet が実際に DUSDC を受領した TX が確認できた」場合のみ。
+        // 自動 redeem（payout は manager に入るだけ）は CLAIMED にしない。
         if (claimed.has(position.key)) {
             position.status = "Claimed";
-            position.canRedeem = false;
-            continue;
-        }
-        if (position.redeemedQuantity >= position.totalQuantity) {
-            position.status = "Pending";
             position.canRedeem = false;
             continue;
         }
@@ -308,21 +321,47 @@ function buildPositions({
             position.canRedeem = false;
             continue;
         }
-        if (position.settlementPrice === null) {
-            position.status = "Pending";
+        // 勝敗判定: settlement price を優先。取得できない場合でも、
+        // 全量 redeem 済みなら oracle は settled なので redeem payout で代替判定する
+        // （満期後の自動 redeem は負けでも payout=0 で実行されるため、
+        //  redeem 済みであること自体は勝敗の根拠にならない）。
+        let won: boolean | null = null;
+        if (position.settlementPrice !== null) {
+            won = position.isUp
+                ? position.settlementPrice > position.strike
+                : position.settlementPrice <= position.strike;
+        } else if (position.redeemedQuantity >= position.totalQuantity) {
+            won = position.redeemedPayout > 0n;
+        }
+        if (won === null) {
+            // 満期後、settlement price も redeem 実績もまだ無い
+            position.status = "Settling";
             position.canRedeem = false;
             continue;
         }
-        const won = position.isUp
-            ? position.settlementPrice > position.strike
-            : position.settlementPrice <= position.strike;
         if (!won) {
             position.status = "Lose";
             position.canRedeem = false;
             continue;
         }
-        position.status = position.redeemManagerId ? "Claim" : "Pending";
-        position.canRedeem = Boolean(position.redeemManagerId) && position.redeemQuantity > 0n;
+        position.status = "Win";
+        if (position.redeemManagerId && position.redeemQuantity > 0n) {
+            // Case A: 未 redeem 分が残っている → redeem + withdraw で wallet へ
+            position.claimKind = "redeem";
+            position.canRedeem = true;
+        } else if (position.redeemManagerId && position.redeemedPayout > 0n) {
+            // Case B: 自動 redeem 済み（payout は manager 内）。
+            // 同一 manager に複数の自動 redeem 済みポジションがある場合、
+            // per-position の Claim ボタンは manager 残高の二重引き出しリスクがある。
+            // そのため per-position Claim は提示せず、Collect ボタンで一括回収する。
+            // Collect 後に残高が 0 になると balance < redeemedPayout → CLAIMED に変わる。
+            const balance = managerBalances[position.redeemManagerId];
+            if (balance !== undefined && balance < position.redeemedPayout) {
+                position.status = "Claimed";
+                position.canRedeem = false;
+            }
+            // else: Win のまま・canRedeem = false。Collect ボタンで回収する。
+        }
     }
 
     return [...grouped.values()].sort((left, right) => right.expiryMs - left.expiryMs);
@@ -401,11 +440,28 @@ function isCurrentPosition(position: PortfolioPosition): boolean {
     return position.expiryMs > Date.now() && position.status === "Open";
 }
 
+function displayStatus(status: BinaryPositionStatus | "Unknown"): string {
+    switch (status) {
+        case "Open":
+            return "OPEN";
+        case "Settling":
+            return "SETTLING";
+        case "Win":
+            return "WIN";
+        case "Claimed":
+            return "CLAIMED";
+        case "Lose":
+            return "LOSE";
+        default:
+            return "UNKNOWN";
+    }
+}
+
 function statusClass(status: BinaryPositionStatus): string {
     if (status === "Lose" || status === "Claimed") {
         return "is-muted";
     }
-    if (status === "Claim") {
+    if (status === "Win") {
         return "is-actionable";
     }
     return "";
@@ -418,8 +474,11 @@ function payoutLabel(position: PortfolioPosition | null): string {
     if (position.status === "Lose") {
         return "0 DUSDC";
     }
-    if (position.status === "Claim" || position.status === "Claimed") {
-        return formatDUSDC(position.totalQuantity);
+    if (position.status === "Win" || position.status === "Claimed") {
+        // redeem 実績があれば実際の払戻額、無ければ最大払戻（quantity）を表示
+        return formatDUSDC(
+            position.redeemedPayout > 0n ? position.redeemedPayout : position.totalQuantity,
+        );
     }
     return "--";
 }
@@ -433,12 +492,12 @@ function rangeStatus(
     }
     const settlement = oracleSettlements[event.oracleId];
     if (!settlement?.settlementPrice) {
-        return "Pending";
+        return "Settling";
     }
     const won =
         settlement.settlementPrice > event.lowerStrike &&
         settlement.settlementPrice <= event.higherStrike;
-    return won ? "Claim" : "Lose";
+    return won ? "Win" : "Lose";
 }
 
 function breakStatus({
@@ -458,15 +517,15 @@ function breakStatus({
     }
     const settlement = oracleSettlements[group.lower.oracleId];
     if (!settlement?.settlementPrice) {
-        return { status: "Pending", winningPosition: null };
+        return { status: "Settling", winningPosition: null };
     }
     if (settlement.settlementPrice <= group.lower.strike) {
         const winningPosition = positionByKey.get(positionKey(group.lower)) ?? null;
-        return { status: winningPosition?.status ?? "Claim", winningPosition };
+        return { status: winningPosition?.status ?? "Win", winningPosition };
     }
     if (settlement.settlementPrice > group.upper.strike) {
         const winningPosition = positionByKey.get(positionKey(group.upper)) ?? null;
-        return { status: winningPosition?.status ?? "Claim", winningPosition };
+        return { status: winningPosition?.status ?? "Win", winningPosition };
     }
     return { status: "Lose", winningPosition: null };
 }
@@ -603,8 +662,22 @@ export function BinaryPortfolioSection({
     const [error, setError] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [redeemingKey, setRedeemingKey] = useState<string | null>(null);
+    const [isCollecting, setIsCollecting] = useState(false);
     const [message, setMessage] = useState<string | null>(null);
     const [historyPage, setHistoryPage] = useState(1);
+    const [expandedHistoryKeys, setExpandedHistoryKeys] = useState<Set<string>>(new Set());
+
+    const toggleHistoryExpand = useCallback((key: string) => {
+        setExpandedHistoryKeys((prev) => {
+            const next = new Set(prev);
+            if (next.has(key)) {
+                next.delete(key);
+            } else {
+                next.add(key);
+            }
+            return next;
+        });
+    }, []);
 
     const refresh = useCallback(async () => {
         if (!address) {
@@ -646,6 +719,21 @@ export function BinaryPortfolioSection({
                 ),
             );
             const redeemed = redeemedResults.flatMap((result) => result.events);
+            // Case B（自動 redeem 済み WIN）の引き出し済み判定用に manager 残高を読む。
+            // 取得失敗した manager はエントリ無し（= 残高不明）として扱う。
+            const managerBalanceEntries = await Promise.all(
+                managerIds.map(async (managerId) => {
+                    try {
+                        const balance = await readManagerBalance(client, address, managerId);
+                        return [managerId, balance] as const;
+                    } catch {
+                        return null;
+                    }
+                }),
+            );
+            const managerBalances = Object.fromEntries(
+                managerBalanceEntries.filter((entry) => entry !== null),
+            );
             const claimedChecks = await Promise.all(
                 redeemed.map(async (event) => {
                     if (!event.digest) {
@@ -661,6 +749,7 @@ export function BinaryPortfolioSection({
                 redeemed,
                 claimedKeys: claimedChecks.filter((key) => key !== null),
                 oracleSettlements,
+                managerBalances,
                 mintedPagesRead: mintedResult.pagesRead,
                 rangePagesRead: rangeMintedResult.pagesRead,
                 redeemedPagesRead: redeemedResults.reduce(
@@ -677,7 +766,7 @@ export function BinaryPortfolioSection({
         } finally {
             setIsLoading(false);
         }
-    }, [address]);
+    }, [address, client]);
 
     useEffect(() => {
         void refresh();
@@ -690,6 +779,7 @@ export function BinaryPortfolioSection({
                 redeemed: state?.redeemed ?? [],
                 claimedKeys: state?.claimedKeys ?? [],
                 oracleSettlements: state?.oracleSettlements ?? {},
+                managerBalances: state?.managerBalances ?? {},
                 roundMarket,
             }),
         [roundMarket, state],
@@ -771,11 +861,14 @@ export function BinaryPortfolioSection({
         [currentDisplayPositions],
     );
     const history = useMemo<DisplayHistoryItem[]>(() => {
+        const oracleSettlements = state?.oracleSettlements ?? {};
         const binaryItems = (state?.minted ?? [])
             .filter((event) => !breakLegEventKeys.has(eventKey(event)))
             .map((event): DisplayHistoryItem => {
                 const groupKey = positionKey(event);
                 const position = positionByKey.get(groupKey) ?? null;
+                const settlementState = oracleSettlements[event.oracleId];
+                const settlementPrice = settlementState?.settlementPrice ?? null;
                 return {
                     key: `BINARY:${eventKey(event)}`,
                     positionGroupKey: groupKey,
@@ -790,11 +883,17 @@ export function BinaryPortfolioSection({
                     status: position?.status ?? "Unknown",
                     actionDigest: event.digest,
                     binaryPosition: position,
-                    canShowRedeem: false,
+                    oracleId: event.oracleId,
+                    isUp: event.isUp,
+                    settlementLifecycle: settlementState?.lifecycle ?? null,
+                    settlementPriceLabel:
+                        settlementPrice !== null ? formatStrike(settlementPrice) : null,
                 };
             });
         const rangeItems = (state?.rangeMinted ?? []).map((event): DisplayHistoryItem => {
-            const status = rangeStatus(event, state?.oracleSettlements ?? {});
+            const status = rangeStatus(event, oracleSettlements);
+            const settlementState = oracleSettlements[event.oracleId];
+            const settlementPrice = settlementState?.settlementPrice ?? null;
             return {
                 key: `RANGE:${rangeEventKey(event)}`,
                 positionGroupKey: rangePositionKey(event),
@@ -809,15 +908,21 @@ export function BinaryPortfolioSection({
                 status,
                 actionDigest: event.digest,
                 binaryPosition: null,
-                canShowRedeem: false,
+                oracleId: event.oracleId,
+                isUp: null,
+                settlementLifecycle: settlementState?.lifecycle ?? null,
+                settlementPriceLabel:
+                    settlementPrice !== null ? formatStrike(settlementPrice) : null,
             };
         });
         const breakItems = [...breakGroups.values()].map((group): DisplayHistoryItem => {
             const status = breakStatus({
                 group,
-                oracleSettlements: state?.oracleSettlements ?? {},
+                oracleSettlements,
                 positionByKey,
             });
+            const settlementState = oracleSettlements[group.lower.oracleId];
+            const settlementPrice = settlementState?.settlementPrice ?? null;
             return {
                 key: group.key,
                 positionGroupKey: group.key,
@@ -833,7 +938,11 @@ export function BinaryPortfolioSection({
                 status: status.status,
                 actionDigest: group.lower.digest,
                 binaryPosition: status.winningPosition,
-                canShowRedeem: false,
+                oracleId: group.lower.oracleId,
+                isUp: null,
+                settlementLifecycle: settlementState?.lifecycle ?? null,
+                settlementPriceLabel:
+                    settlementPrice !== null ? formatStrike(settlementPrice) : null,
             };
         });
         return [...binaryItems, ...rangeItems, ...breakItems]
@@ -846,16 +955,53 @@ export function BinaryPortfolioSection({
         (safeHistoryPage - 1) * HISTORY_PAGE_SIZE,
         safeHistoryPage * HISTORY_PAGE_SIZE,
     );
-    const historyActionKeys = useMemo(() => {
-        const keys = new Set<string>();
-        for (const item of history) {
-            const position = item.binaryPosition;
-            if (position?.canRedeem) {
-                keys.add(position.key);
-            }
+
+    // manager に残っている DUSDC の合計（BET 時の超過入金や未引き出し payout の残滓）
+    const totalManagerBalance = useMemo(() => {
+        const balances = state?.managerBalances ?? {};
+        return Object.values(balances).reduce((total, balance) => total + balance, 0n);
+    }, [state]);
+
+    // 全 manager の残高をまとめて wallet へ引き出す（manager ごとに 1 TX）
+    const collectManagerBalances = async () => {
+        if (!address || !state) {
+            return;
         }
-        return keys;
-    }, [history]);
+        const entries = Object.entries(state.managerBalances).filter(([, balance]) => balance > 0n);
+        if (entries.length === 0) {
+            return;
+        }
+        setIsCollecting(true);
+        setMessage("Confirm in wallet");
+        try {
+            let collected = 0n;
+            for (const [managerId, balance] of entries) {
+                const tx = createWithdrawManagerQuoteTransaction({
+                    sender: address,
+                    managerId,
+                    amount: balance,
+                });
+                console.info("Binary portfolio Collect transaction", {
+                    managerId,
+                    amount: balance.toString(),
+                });
+                const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+                const digest = readDigest(result);
+                await client.core.waitForTransaction({ digest, timeout: 60_000 });
+                collected += balance;
+            }
+            setMessage(`Collected ${formatDUSDC(collected)} to wallet`);
+            await refresh();
+        } catch (caught) {
+            if (isWalletUserRejection(caught)) {
+                setMessage("Transaction cancelled");
+                return;
+            }
+            setMessage(readWalletErrorMessage(caught));
+        } finally {
+            setIsCollecting(false);
+        }
+    };
 
     const redeem = async (position: PortfolioPosition) => {
         if (!address || !position.canRedeem || !position.redeemManagerId) {
@@ -874,6 +1020,7 @@ export function BinaryPortfolioSection({
                 quantity: position.redeemQuantity,
             });
             console.info("Binary portfolio Claim Payout transaction", {
+                claimKind: position.claimKind,
                 moveCalls: describeClaimBinaryPayoutMoveCalls(),
                 managerId: position.redeemManagerId,
                 oracleId: position.oracleId,
@@ -889,13 +1036,13 @@ export function BinaryPortfolioSection({
                 timeout: 60_000,
                 include: { events: true, balanceChanges: true, effects: true },
             });
-            const redeemed = readRedeemEvent(executed.Transaction?.events);
+            const claimedPayout = readRedeemEvent(executed.Transaction?.events).payout;
             const walletReceivedDusdc =
                 isSuccessfulTransactionResult(executed) &&
                 hasPositiveWalletDusdcBalanceChange(executed.Transaction?.balanceChanges, address);
             setMessage(
                 walletReceivedDusdc
-                    ? `Claimed ${formatDUSDC(redeemed.payout)}`
+                    ? `Claimed ${formatDUSDC(claimedPayout)}`
                     : "Redeemed to manager. Withdraw DUSDC may be needed.",
             );
             await refresh();
@@ -913,8 +1060,6 @@ export function BinaryPortfolioSection({
             setRedeemingKey(null);
         }
     };
-
-    const renderedActionKeys = new Set<string>();
 
     return (
         <section className="binary-portfolio">
@@ -985,7 +1130,7 @@ export function BinaryPortfolioSection({
                                 </div>
                                 <div>
                                     <span>Status</span>
-                                    <strong>{position.status}</strong>
+                                    <strong>{displayStatus(position.status)}</strong>
                                 </div>
                             </article>
                         ))}
@@ -1017,9 +1162,24 @@ export function BinaryPortfolioSection({
                         <span>BTC Binary</span>
                         <h2>Your history</h2>
                     </div>
-                    <strong>
-                        {history.length} records · Page {safeHistoryPage} / {historyPageCount}
-                    </strong>
+                    <div className="history-title-side">
+                        <strong>
+                            {history.length} records · Page {safeHistoryPage} / {historyPageCount}
+                        </strong>
+                        {totalManagerBalance > 0n ? (
+                            <button
+                                type="button"
+                                className="text-action"
+                                disabled={isCollecting}
+                                title="Withdraw all DUSDC remaining in your PredictManager (slippage deposits and unclaimed payouts) to your wallet"
+                                onClick={() => void collectManagerBalances()}
+                            >
+                                {isCollecting
+                                    ? "Collecting..."
+                                    : `Collect ${formatDUSDC(totalManagerBalance)}`}
+                            </button>
+                        ) : null}
+                    </div>
                 </div>
                 {history.length === 0 ? (
                     <div className="empty-state">No PositionMinted history in fetched events.</div>
@@ -1027,16 +1187,8 @@ export function BinaryPortfolioSection({
                     <>
                         <div className="binary-history-list">
                             {pagedHistory.map((item) => {
-                                const digest = item.actionDigest;
                                 const position = item.binaryPosition;
-                                const redeemablePosition = position?.canRedeem ? position : null;
-                                const canShowRedeem =
-                                    redeemablePosition !== null &&
-                                    historyActionKeys.has(redeemablePosition.key) &&
-                                    !renderedActionKeys.has(redeemablePosition.key);
-                                if (canShowRedeem) {
-                                    renderedActionKeys.add(redeemablePosition.key);
-                                }
+                                const isExpanded = expandedHistoryKeys.has(item.key);
                                 return (
                                     <article
                                         key={item.key}
@@ -1081,34 +1233,122 @@ export function BinaryPortfolioSection({
                                         </div>
                                         <div>
                                             <span>Status</span>
-                                            <strong>{item.status}</strong>
+                                            <strong
+                                                className={`status-label status-${item.status.toLowerCase()}`}
+                                            >
+                                                {displayStatus(item.status)}
+                                            </strong>
                                         </div>
                                         <div className="binary-history-action">
-                                            {canShowRedeem && position ? (
-                                                <button
-                                                    type="button"
-                                                    className="text-action"
-                                                    disabled={redeemingKey === position.key}
-                                                    onClick={() => void redeem(position)}
-                                                >
-                                                    {redeemingKey === position.key
-                                                        ? "Redeeming..."
-                                                        : "Claim Payout"}
-                                                </button>
-                                            ) : position?.status === "Claimed" ? (
-                                                <span>Claimed</span>
-                                            ) : digest ? (
-                                                <a
-                                                    href={predictBinaryExplorerUrl(digest)}
-                                                    target="_blank"
-                                                    rel="noreferrer"
-                                                >
-                                                    {shortDigest(digest)}
-                                                </a>
-                                            ) : (
-                                                <span>--</span>
-                                            )}
+                                            <button
+                                                type="button"
+                                                className="accordion-chevron"
+                                                onClick={() => toggleHistoryExpand(item.key)}
+                                            >
+                                                {isExpanded ? "▲" : "▼"}
+                                            </button>
                                         </div>
+                                        {isExpanded && (
+                                            <div className="history-accordion">
+                                                <div className="history-accordion-field">
+                                                    <span>Oracle ID</span>
+                                                    <small>{item.oracleId}</small>
+                                                </div>
+                                                <div className="history-accordion-field">
+                                                    <span>Expiry</span>
+                                                    <small>{formatDateTime(item.roundEndMs)}</small>
+                                                </div>
+                                                {item.binaryPosition && (
+                                                    <div className="history-accordion-field">
+                                                        <span>Strike</span>
+                                                        <small>
+                                                            {formatStrike(
+                                                                item.binaryPosition.strike,
+                                                            )}
+                                                        </small>
+                                                    </div>
+                                                )}
+                                                <div className="history-accordion-field">
+                                                    <span>Side / is_up</span>
+                                                    <small>
+                                                        {item.side}
+                                                        {item.isUp !== null
+                                                            ? ` (is_up: ${String(item.isUp)})`
+                                                            : ""}
+                                                    </small>
+                                                </div>
+                                                <div className="history-accordion-field">
+                                                    <span>Settlement Status</span>
+                                                    <small>
+                                                        {item.settlementLifecycle ?? "--"}
+                                                    </small>
+                                                </div>
+                                                <div className="history-accordion-field">
+                                                    <span>Settlement Price</span>
+                                                    <small>
+                                                        {item.settlementPriceLabel ?? "--"}
+                                                    </small>
+                                                </div>
+                                                <div className="history-accordion-field">
+                                                    <span>Redeemable Payout</span>
+                                                    <small>
+                                                        {item.binaryPosition
+                                                            ? formatDUSDC(
+                                                                  item.binaryPosition
+                                                                      .redeemQuantity > 0n
+                                                                      ? item.binaryPosition
+                                                                            .redeemQuantity
+                                                                      : item.binaryPosition
+                                                                            .redeemedPayout,
+                                                              )
+                                                            : "--"}
+                                                    </small>
+                                                </div>
+                                                <div className="history-accordion-field">
+                                                    <span>Claimed</span>
+                                                    <small>
+                                                        {item.binaryPosition?.status === "Claimed"
+                                                            ? "Yes"
+                                                            : "No"}
+                                                    </small>
+                                                </div>
+                                                <div className="history-accordion-field">
+                                                    <span>TX / Position ID</span>
+                                                    <small>
+                                                        {item.actionDigest ? (
+                                                            <a
+                                                                href={predictBinaryExplorerUrl(
+                                                                    item.actionDigest,
+                                                                )}
+                                                                target="_blank"
+                                                                rel="noreferrer"
+                                                            >
+                                                                {shortDigest(item.actionDigest)}
+                                                            </a>
+                                                        ) : (
+                                                            "--"
+                                                        )}
+                                                    </small>
+                                                </div>
+                                                {position?.canRedeem && (
+                                                    <div className="history-accordion-claim">
+                                                        <button
+                                                            type="button"
+                                                            className="text-action"
+                                                            disabled={redeemingKey === position.key}
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                void redeem(position);
+                                                            }}
+                                                        >
+                                                            {redeemingKey === position.key
+                                                                ? "Redeeming..."
+                                                                : "Claim Payout"}
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
                                     </article>
                                 );
                             })}
