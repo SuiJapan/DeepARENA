@@ -116,7 +116,7 @@ public fun join_arena<Quote>(
     arena: &mut Arena<Quote>,
     manager: &PredictManager,
     clock: &Clock,
-    ctx: &TxContext,
+    ctx: &mut TxContext,
 ) {
     let player = ctx.sender();
     assert!(manager.owner() == player, ENotManagerOwner);

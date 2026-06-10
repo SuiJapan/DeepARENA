@@ -30,6 +30,7 @@ public fun settle_arena<Quote>(
 
 /// fee_vault から amount を引き出し、呼び出し元（運営）に転送する。
 /// amount が fee_vault 残高を超える場合は SUI ランタイムが abort する。
+#[allow(lint(self_transfer))]
 public fun withdraw_fees<Quote>(
     _: &AdminCap,
     arena: &mut Arena<Quote>,
