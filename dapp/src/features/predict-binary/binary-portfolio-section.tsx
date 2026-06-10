@@ -55,8 +55,7 @@ interface PortfolioPosition {
     settlementPrice: bigint | null;
     canRedeem: boolean;
     // "redeem": 未 redeem 分を redeem + withdraw で wallet へ（Case A）
-    // "withdraw": 自動 redeem 済みの payout を manager から withdraw（Case B）
-    claimKind: "redeem" | "withdraw" | null;
+    claimKind: "redeem" | null;
     redeemQuantity: bigint;
     redeemManagerId: string | null;
 }
@@ -352,17 +351,16 @@ function buildPositions({
             position.canRedeem = true;
         } else if (position.redeemManagerId && position.redeemedPayout > 0n) {
             // Case B: 自動 redeem 済み（payout は manager 内）。
-            // manager 残高が payout 以上なら未引き出しと判断して withdraw を提示し、
-            // 残高が payout 未満なら引き出し済みとして CLAIMED にする。
-            // 残高取得に失敗した場合は withdraw を提示する（失敗しても TX が abort するだけで安全）。
+            // 同一 manager に複数の自動 redeem 済みポジションがある場合、
+            // per-position の Claim ボタンは manager 残高の二重引き出しリスクがある。
+            // そのため per-position Claim は提示せず、Collect ボタンで一括回収する。
+            // Collect 後に残高が 0 になると balance < redeemedPayout → CLAIMED に変わる。
             const balance = managerBalances[position.redeemManagerId];
             if (balance !== undefined && balance < position.redeemedPayout) {
                 position.status = "Claimed";
                 position.canRedeem = false;
-            } else {
-                position.claimKind = "withdraw";
-                position.canRedeem = true;
             }
+            // else: Win のまま・canRedeem = false。Collect ボタンで回収する。
         }
     }
 
@@ -1012,34 +1010,24 @@ export function BinaryPortfolioSection({
         setRedeemingKey(position.key);
         setMessage("Confirm in wallet");
         try {
-            // Case B（自動 redeem 済み）は manager から payout を withdraw するだけ。
-            // Case A は redeem + withdraw を 1 TX で実行する。
-            const isWithdrawOnly = position.claimKind === "withdraw";
-            const tx = isWithdrawOnly
-                ? createWithdrawManagerQuoteTransaction({
-                      sender: address,
-                      managerId: position.redeemManagerId,
-                      amount: position.redeemedPayout,
-                  })
-                : createClaimBinaryPayoutTransaction({
-                      sender: address,
-                      managerId: position.redeemManagerId,
-                      oracleId: position.oracleId,
-                      expiryMs: position.expiryMs,
-                      strike: position.strike,
-                      isUp: position.isUp,
-                      quantity: position.redeemQuantity,
-                  });
+            const tx = createClaimBinaryPayoutTransaction({
+                sender: address,
+                managerId: position.redeemManagerId,
+                oracleId: position.oracleId,
+                expiryMs: position.expiryMs,
+                strike: position.strike,
+                isUp: position.isUp,
+                quantity: position.redeemQuantity,
+            });
             console.info("Binary portfolio Claim Payout transaction", {
                 claimKind: position.claimKind,
-                moveCalls: isWithdrawOnly ? undefined : describeClaimBinaryPayoutMoveCalls(),
+                moveCalls: describeClaimBinaryPayoutMoveCalls(),
                 managerId: position.redeemManagerId,
                 oracleId: position.oracleId,
                 expiryMs: position.expiryMs,
                 referenceStrikeRaw: position.strike.toString(),
                 isUp: position.isUp,
                 quantity: position.redeemQuantity.toString(),
-                withdrawAmount: isWithdrawOnly ? position.redeemedPayout.toString() : undefined,
             });
             const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
             const digest = readDigest(result);
@@ -1048,10 +1036,7 @@ export function BinaryPortfolioSection({
                 timeout: 60_000,
                 include: { events: true, balanceChanges: true, effects: true },
             });
-            // withdraw のみの TX には redeem イベントが無いので redeemedPayout を使う
-            const claimedPayout = isWithdrawOnly
-                ? position.redeemedPayout
-                : readRedeemEvent(executed.Transaction?.events).payout;
+            const claimedPayout = readRedeemEvent(executed.Transaction?.events).payout;
             const walletReceivedDusdc =
                 isSuccessfulTransactionResult(executed) &&
                 hasPositiveWalletDusdcBalanceChange(executed.Transaction?.balanceChanges, address);
@@ -1309,12 +1294,12 @@ export function BinaryPortfolioSection({
                                                     <small>
                                                         {item.binaryPosition
                                                             ? formatDUSDC(
-                                                                  item.binaryPosition.claimKind ===
-                                                                      "withdraw"
+                                                                  item.binaryPosition
+                                                                      .redeemQuantity > 0n
                                                                       ? item.binaryPosition
-                                                                            .redeemedPayout
+                                                                            .redeemQuantity
                                                                       : item.binaryPosition
-                                                                            .redeemQuantity,
+                                                                            .redeemedPayout,
                                                               )
                                                             : "--"}
                                                     </small>
