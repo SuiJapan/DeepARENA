@@ -16,8 +16,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function readU64String(value: unknown): string | null {
+    const text = typeof value === "number" ? String(value) : value;
+    if (typeof text === "string" && /^(0|[1-9]\d*)$/.test(text)) {
+        return text;
+    }
+    return null;
+}
+
 function readStringOrNull(value: unknown): string | null {
-    return typeof value === "string" && value.length > 0 ? value : null;
+    if (value === null || value === undefined) {
+        return null;
+    }
+    if (Array.isArray(value)) {
+        return value.length > 0 ? readU64String(value[0]) : null;
+    }
+    if (isRecord(value)) {
+        if ("Some" in value) return readU64String(value.Some);
+        if ("some" in value) return readU64String(value.some);
+        if ("value" in value) return readU64String(value.value);
+        if ("fields" in value) return readStringOrNull(value.fields);
+        if ("vec" in value) return readStringOrNull(value.vec);
+        if ("None" in value || "none" in value) return null;
+    }
+    return readU64String(value);
 }
 
 function readSettlementPriceRaw(value: Record<string, unknown>): string | null {
@@ -27,8 +49,11 @@ function readSettlementPriceRaw(value: Record<string, unknown>): string | null {
         "settlementPriceRaw",
         "settlement_price_raw",
     ]) {
+        if (value[key] === undefined || value[key] === null) {
+            continue;
+        }
         const raw = readStringOrNull(value[key]);
-        if (raw !== null && /^(0|[1-9]\d*)$/.test(raw)) {
+        if (raw !== null) {
             return raw;
         }
     }

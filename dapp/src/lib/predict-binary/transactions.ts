@@ -319,7 +319,11 @@ export function createMintBreakTransaction(input: MintBreakTransactionInput): Tr
             tx.pure.u64(input.expiryMs),
             tx.pure.u64(input.lowerStrike),
             tx.pure.u64(input.higherStrike),
-            tx.pure.u64(input.lowerQuantity),
+            tx.pure.u64(
+                input.lowerQuantity < input.upperQuantity
+                    ? input.lowerQuantity
+                    : input.upperQuantity,
+            ),
             tx.pure.u64(input.maxTotalCost),
             tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
         ],
