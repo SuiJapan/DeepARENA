@@ -1,6 +1,28 @@
 import { coinWithBalance, Transaction } from "@mysten/sui/transactions";
 import { PREDICT_BINARY_CONFIG } from "./config";
 
+/** Deep Arena パッケージ内の関数ターゲットを返す */
+const arenaTarget = (moduleName: string, functionName: string) =>
+    `${PREDICT_BINARY_CONFIG.deepArenaPackageId}::${moduleName}::${functionName}`;
+
+/**
+ * mintCost（推定コスト）から手数料を切り上げ計算する。
+ * fee = ceil(mintCost * feeBps / 10_000)
+ */
+export function calcFee(mintCost: bigint, feeBps: number): bigint {
+    return (mintCost * BigInt(feeBps) + 9_999n) / 10_000n;
+}
+
+/**
+ * maxTotalCost を計算する。
+ * mintCost + fee に 1% スリッページバッファを加算して切り上げる。
+ */
+export function calcMaxTotalCost(mintCost: bigint, feeBps: number): bigint {
+    const fee = calcFee(mintCost, feeBps);
+    const base = mintCost + fee;
+    return base + (base + 99n) / 100n; // +1% buffer (round up)
+}
+
 export interface BinaryMarketKeyInput {
     oracleId: string;
     expiryMs: number;
@@ -13,6 +35,7 @@ export interface MintBinaryTransactionInput extends BinaryMarketKeyInput {
     managerId: string;
     quantity: bigint;
     depositAmount: bigint;
+    maxTotalCost: bigint;
 }
 
 export interface RedeemBinaryTransactionInput extends BinaryMarketKeyInput {
@@ -33,6 +56,7 @@ export interface MintRangeTransactionInput extends RangeKeyInput {
     managerId: string;
     quantity: bigint;
     depositAmount: bigint;
+    maxTotalCost: bigint;
 }
 
 export interface MintBreakTransactionInput extends RangeKeyInput {
@@ -41,6 +65,7 @@ export interface MintBreakTransactionInput extends RangeKeyInput {
     lowerQuantity: bigint;
     upperQuantity: bigint;
     depositAmount: bigint;
+    maxTotalCost: bigint;
 }
 
 export interface MoveCallSummary {
@@ -80,6 +105,28 @@ export function createPredictManagerTransaction(sender: string): Transaction {
     const tx = new Transaction();
     tx.setSender(sender);
     tx.moveCall({ target: target("predict", "create_manager") });
+    return tx;
+}
+
+/** Arena への参加登録 PTB（初回 BET 前に 1 回だけ実行） */
+export function createJoinArenaTransaction({
+    sender,
+    managerId,
+}: {
+    sender: string;
+    managerId: string;
+}): Transaction {
+    const tx = new Transaction();
+    tx.setSender(sender);
+    tx.moveCall({
+        target: arenaTarget("arena", "join_arena"),
+        typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+        arguments: [
+            tx.object(PREDICT_BINARY_CONFIG.arenaObjectId),
+            tx.object(managerId),
+            tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
+        ],
+    });
     return tx;
 }
 
@@ -186,16 +233,20 @@ export function createMintBinaryTransaction(input: MintBinaryTransactionInput): 
         });
     }
 
-    const key = addMarketKey(tx, input);
     tx.moveCall({
-        target: target("predict", "mint"),
+        target: arenaTarget("bet", "open_binary"),
         typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
         arguments: [
+            tx.object(PREDICT_BINARY_CONFIG.arenaObjectId),
             tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
             tx.object(input.managerId),
             tx.object(input.oracleId),
-            key,
+            tx.pure.id(input.oracleId),
+            tx.pure.u64(input.expiryMs),
+            tx.pure.u64(input.strike),
+            tx.pure.bool(input.isUp),
             tx.pure.u64(input.quantity),
+            tx.pure.u64(input.maxTotalCost),
             tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
         ],
     });
@@ -219,16 +270,20 @@ export function createMintRangeTransaction(input: MintRangeTransactionInput): Tr
         });
     }
 
-    const key = addRangeKey(tx, input);
     tx.moveCall({
-        target: target("predict", "mint_range"),
+        target: arenaTarget("bet", "open_range"),
         typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
         arguments: [
+            tx.object(PREDICT_BINARY_CONFIG.arenaObjectId),
             tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
             tx.object(input.managerId),
             tx.object(input.oracleId),
-            key,
+            tx.pure.id(input.oracleId),
+            tx.pure.u64(input.expiryMs),
+            tx.pure.u64(input.lowerStrike),
+            tx.pure.u64(input.higherStrike),
             tx.pure.u64(input.quantity),
+            tx.pure.u64(input.maxTotalCost),
             tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
         ],
     });
@@ -252,40 +307,20 @@ export function createMintBreakTransaction(input: MintBreakTransactionInput): Tr
         });
     }
 
-    const lowerKey = addMarketKey(tx, {
-        oracleId: input.oracleId,
-        expiryMs: input.expiryMs,
-        strike: input.lowerStrike,
-        isUp: false,
-    });
     tx.moveCall({
-        target: target("predict", "mint"),
+        target: arenaTarget("bet", "open_break"),
         typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
         arguments: [
+            tx.object(PREDICT_BINARY_CONFIG.arenaObjectId),
             tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
             tx.object(input.managerId),
             tx.object(input.oracleId),
-            lowerKey,
+            tx.pure.id(input.oracleId),
+            tx.pure.u64(input.expiryMs),
+            tx.pure.u64(input.lowerStrike),
+            tx.pure.u64(input.higherStrike),
             tx.pure.u64(input.lowerQuantity),
-            tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
-        ],
-    });
-
-    const upperKey = addMarketKey(tx, {
-        oracleId: input.oracleId,
-        expiryMs: input.expiryMs,
-        strike: input.higherStrike,
-        isUp: true,
-    });
-    tx.moveCall({
-        target: target("predict", "mint"),
-        typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
-        arguments: [
-            tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
-            tx.object(input.managerId),
-            tx.object(input.oracleId),
-            upperKey,
-            tx.pure.u64(input.upperQuantity),
+            tx.pure.u64(input.maxTotalCost),
             tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
         ],
     });

@@ -13,6 +13,7 @@ import { formatTokenAmount, parseTokenAmount } from "@/src/lib/plp-sandbox/amoun
 import {
     type BtcBinaryMarket,
     type BudgetedTradePreview,
+    checkArenaPlayerJoined,
     findMintEvent,
     findPredictManager,
     type MintEvent,
@@ -30,6 +31,9 @@ import { PREDICT_BINARY_CONFIG, predictBinaryExplorerUrl } from "@/src/lib/predi
 import { readSuiEventPayloads } from "@/src/lib/predict-binary/events";
 import { formatBinaryOddsFromQuantity } from "@/src/lib/predict-binary/odds";
 import {
+    calcFee,
+    calcMaxTotalCost,
+    createJoinArenaTransaction,
     createMintBinaryTransaction,
     createPredictManagerTransaction,
     createRedeemBinaryTransaction,
@@ -37,6 +41,12 @@ import {
     describeMintBinaryMoveCalls,
 } from "@/src/lib/predict-binary/transactions";
 import { isWalletUserRejection, readWalletCancellationDebug } from "@/src/lib/wallet-errors";
+
+/** Sui MoveAbort で EAlreadyJoined(=3) が返った場合に true */
+function isArenaAlreadyJoinedError(error: unknown): boolean {
+    const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    return (msg.includes("moveabort") || msg.includes("abort")) && msg.includes(", 3)");
+}
 
 export type BinaryDirection = "UP" | "DOWN";
 export type BinaryTxStatus =
@@ -355,9 +365,6 @@ function getBetAvailability({
                     : "Odds unavailable. Please wait or refresh.",
         };
     }
-    if (state.previewKey !== expectedPreviewKey) {
-        return { ...base, canBet: false, reason: "Preview is stale. Please wait." };
-    }
     if (state.preview.quantity <= 0n || state.preview.mintCost <= 0n) {
         return { ...base, canBet: false, reason: "Market is not currently mintable." };
     }
@@ -442,6 +449,7 @@ export function usePredictBinary(
     const [walletBalance, setWalletBalance] = useState(0n);
     const [managerId, setManagerId] = useState<string | null>(null);
     const [managerBalance, setManagerBalance] = useState(0n);
+    const [hasJoinedArena, setHasJoinedArena] = useState(false);
     const [market, setMarket] = useState<BtcBinaryMarket | null>(null);
     const [upPreview, setUpPreview] = useState<SidePreviewState>({
         status: "IDLE",
@@ -470,6 +478,18 @@ export function usePredictBinary(
 
     const address = account?.address ?? null;
     const isTestnet = network === PREDICT_BINARY_CONFIG.network;
+
+    // ウォレット接続時にオンチェーンで参加済みか確認し、不要な join TX を防ぐ
+    useEffect(() => {
+        if (!address || !isTestnet) {
+            setHasJoinedArena(false);
+            return;
+        }
+        void checkArenaPlayerJoined(address).then((joined) => {
+            if (joined) setHasJoinedArena(true);
+        });
+    }, [address, isTestnet]);
+
     const isBusy = txStatus === "CONFIRM IN WALLET" || txStatus === "SUBMITTING";
     const isBettingOpen = roundMarket?.state === "BETTING_OPEN";
     const oracleTimestampMs = roundMarket?.currentOracle?.timestampMs ?? null;
@@ -1079,17 +1099,55 @@ export function usePredictBinary(
                 ) {
                     throw new Error("Round changed before wallet confirmation");
                 }
+                // Arena への参加登録が未完了の場合は先に join する
+                let nextHasJoined = hasJoinedArena;
+                if (!nextHasJoined && nextManagerId) {
+                    // state が stale の可能性があるのでオンチェーンで再確認
+                    nextHasJoined = await checkArenaPlayerJoined(address);
+                    if (nextHasJoined) setHasJoinedArena(true);
+                }
+                if (!nextHasJoined && nextManagerId) {
+                    setTxStatus("CONFIRM IN WALLET");
+                    setMessage("CONFIRM IN WALLET (Arena Join)");
+                    try {
+                        const joinResult = await dAppKit.signAndExecuteTransaction({
+                            transaction: createJoinArenaTransaction({
+                                sender: address,
+                                managerId: nextManagerId,
+                            }),
+                        });
+                        const joinDigest = readDigest(joinResult);
+                        await client.core.waitForTransaction({
+                            digest: joinDigest,
+                            timeout: 60_000,
+                        });
+                        setHasJoinedArena(true);
+                        nextHasJoined = true;
+                    } catch (joinError) {
+                        // 既に参加済み (EAlreadyJoined = 3) の場合はそのまま続行
+                        if (isArenaAlreadyJoinedError(joinError)) {
+                            setHasJoinedArena(true);
+                            nextHasJoined = true;
+                        } else {
+                            throw joinError;
+                        }
+                    }
+                }
+
+                const maxTotalCost = calcMaxTotalCost(
+                    latestPreview.mintCost,
+                    PREDICT_BINARY_CONFIG.feeBps,
+                );
+                const fee = calcFee(latestPreview.mintCost, PREDICT_BINARY_CONFIG.feeBps);
                 const knownManagerBalance = nextManagerId ? managerBalance : 0n;
                 const depositAmount =
-                    latestPreview.mintCost > knownManagerBalance
-                        ? latestPreview.mintCost - knownManagerBalance
-                        : 0n;
+                    maxTotalCost > knownManagerBalance ? maxTotalCost - knownManagerBalance : 0n;
 
                 setMessage(
                     `Using ${formatTokenAmount(
-                        latestPreview.mintCost,
+                        latestPreview.mintCost + fee,
                         PREDICT_BINARY_CONFIG.quoteDecimals,
-                    )} DUSDC`,
+                    )} DUSDC (含む手数料 ${formatTokenAmount(fee, PREDICT_BINARY_CONFIG.quoteDecimals)})`,
                 );
                 const mintInput = {
                     sender: address,
@@ -1100,6 +1158,7 @@ export function usePredictBinary(
                     isUp: direction === "UP",
                     quantity: latestPreview.quantity,
                     depositAmount,
+                    maxTotalCost,
                 };
                 const mintMoveCalls = describeMintBinaryMoveCalls(mintInput);
                 console.info("Binary bet mint transaction before wallet approval", {
@@ -1243,6 +1302,7 @@ export function usePredictBinary(
             amount,
             client,
             dAppKit,
+            hasJoinedArena,
             isBettingOpen,
             isBusy,
             isTestnet,
@@ -1422,6 +1482,7 @@ export function usePredictBinary(
                 ? `${formatTokenAmount(lastRedeem.payout, PREDICT_BINARY_CONFIG.quoteDecimals)} DUSDC`
                 : null,
             explorerUrl: lastDigest ? predictBinaryExplorerUrl(lastDigest) : null,
+            feeBpsLabel: `現在手数料 ${PREDICT_BINARY_CONFIG.feeBps / 100}%`,
             placeBet,
         };
     }, [

@@ -6,6 +6,7 @@ import { readSuiEventPayload } from "./events";
 import { type BudgetedTradePreview, findBudgetedTradePreview, type TradeAmounts } from "./preview";
 import {
     type BinaryMarketKeyInput,
+    calcMaxTotalCost,
     createMintBinaryTransaction,
     createPreviewRangeTradeAmountsTransaction,
     createPreviewTradeAmountsTransaction,
@@ -1101,7 +1102,8 @@ export async function calculateQuantityWithinBudget({
     let high = 1n;
     let best = { quantity: 0n, cost: 0n, askPrice: 0n };
     const simulateMint = async (quantity: bigint): Promise<MintEvent | null> => {
-        const depositAmount = budget > managerBalance ? budget - managerBalance : 0n;
+        const maxTotalCost = calcMaxTotalCost(budget, PREDICT_BINARY_CONFIG.feeBps);
+        const depositAmount = maxTotalCost > managerBalance ? maxTotalCost - managerBalance : 0n;
         const tx = createMintBinaryTransaction({
             sender,
             managerId,
@@ -1111,6 +1113,7 @@ export async function calculateQuantityWithinBudget({
             isUp,
             quantity,
             depositAmount,
+            maxTotalCost,
         });
         try {
             const simulated = await client.core.simulateTransaction({
@@ -1155,6 +1158,37 @@ export async function calculateQuantityWithinBudget({
         ...best,
         depositAmount: best.cost > managerBalance ? best.cost - managerBalance : 0n,
     };
+}
+
+/**
+ * Arena の players テーブルに playerAddress が登録済みかを PlayerJoined イベントで確認する。
+ * ネットワークエラー時は false を返す（保守的）。
+ */
+export async function checkArenaPlayerJoined(playerAddress: string): Promise<boolean> {
+    try {
+        const eventType = `${PREDICT_BINARY_CONFIG.deepArenaPackageId}::events::PlayerJoined`;
+        const { events } = await queryMoveEvents({ eventType, maxPages: 5, pageSize: 50 });
+        const normalizedPlayer = playerAddress.toLowerCase();
+        const arenaId = PREDICT_BINARY_CONFIG.arenaObjectId.toLowerCase();
+        for (const event of events) {
+            if (!isRecord(event) || !isRecord(event.parsedJson)) continue;
+            const payload = event.parsedJson;
+            const player = typeof payload.player === "string" ? payload.player.toLowerCase() : "";
+            // arena_id は "0x..." or { id: "0x..." } のどちらにもなりうる
+            let eventArenaId = "";
+            if (typeof payload.arena_id === "string") {
+                eventArenaId = payload.arena_id.toLowerCase();
+            } else if (isRecord(payload.arena_id) && typeof payload.arena_id.id === "string") {
+                eventArenaId = (payload.arena_id.id as string).toLowerCase();
+            }
+            if (player === normalizedPlayer && eventArenaId === arenaId) {
+                return true;
+            }
+        }
+        return false;
+    } catch {
+        return false;
+    }
 }
 
 export async function findPredictManager(owner: string): Promise<string | null> {

@@ -11,6 +11,7 @@ import type { PredictRoundMarket } from "@/src/features/predict-round/use-predic
 import { requestBalanceRefresh } from "@/src/lib/balance-refresh";
 import { formatTokenAmount, parseTokenAmount } from "@/src/lib/plp-sandbox/amounts";
 import {
+    checkArenaPlayerJoined,
     findPredictManager,
     type MintedPositionEvent,
     POSITION_MINTED_EVENT_TYPE,
@@ -22,6 +23,8 @@ import {
 import { PREDICT_BINARY_CONFIG } from "@/src/lib/predict-binary/config";
 import { formatBinaryOddsFromQuantity } from "@/src/lib/predict-binary/odds";
 import {
+    calcMaxTotalCost,
+    createJoinArenaTransaction,
     createMintBreakTransaction,
     createMintRangeTransaction,
     createPredictManagerTransaction,
@@ -733,6 +736,19 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
         cost: bigint;
         entryOdds: string;
     } | null>(null);
+    const [hasJoinedArena, setHasJoinedArena] = useState(false);
+
+    // ウォレット接続時にオンチェーンで参加済みか確認し、不要な join TX を防ぐ
+    useEffect(() => {
+        if (!address || !isTestnet) {
+            setHasJoinedArena(false);
+            return;
+        }
+        void checkArenaPlayerJoined(address).then((joined) => {
+            if (joined) setHasJoinedArena(true);
+        });
+    }, [address, isTestnet]);
+
     const isBusy = txStatus === "CONFIRM IN WALLET" || txStatus === "SUBMITTING";
     const isBettingOpen = roundMarket?.state === "BETTING_OPEN";
 
@@ -763,10 +779,10 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
         selectedCandidate && direction === "RANGE"
             ? selectedCandidate.rangePreviewKey
             : selectedCandidate?.breakPreviewKey;
+    // PREVIEWING 中も旧オッズで BET 可能とする。bet callback が送信直前に fresh re-fetch を行う
     const previewReady =
-        previewState.status === "READY" &&
-        selectedDirectionPreview !== undefined &&
-        selectedPreviewKey === expectedPreviewKey;
+        (previewState.status === "READY" || previewState.status === "PREVIEWING") &&
+        selectedDirectionPreview !== undefined;
     const canEnter =
         Boolean(address) &&
         isTestnet &&
@@ -789,7 +805,7 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                 : !selectedDirectionPreview
                   ? (previewState.error ?? "Odds unavailable")
                   : !previewReady
-                    ? "Preview is stale"
+                    ? "Odds unavailable"
                     : isBusy
                       ? "Transaction pending"
                       : null;
@@ -1207,6 +1223,41 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                     throw new Error("PredictManager creation could not be confirmed");
                 }
             }
+            // Arena への参加登録が未完了の場合は先に join する
+            let nextHasJoined = hasJoinedArena;
+            if (!nextHasJoined) {
+                // state が stale の可能性があるのでオンチェーンで再確認
+                nextHasJoined = await checkArenaPlayerJoined(address);
+                if (nextHasJoined) setHasJoinedArena(true);
+            }
+            if (!nextHasJoined) {
+                setTxStatus("CONFIRM IN WALLET");
+                setMessage("CONFIRM IN WALLET (Arena Join)");
+                try {
+                    const joinResult = await dAppKit.signAndExecuteTransaction({
+                        transaction: createJoinArenaTransaction({ sender: address, managerId }),
+                    });
+                    const joinDigest = readDigest(joinResult);
+                    await client.core.waitForTransaction({ digest: joinDigest, timeout: 60_000 });
+                    setHasJoinedArena(true);
+                    nextHasJoined = true;
+                } catch (joinError) {
+                    // 既に参加済み (EAlreadyJoined = 3) の場合はそのまま続行
+                    const msg = (
+                        joinError instanceof Error ? joinError.message : String(joinError)
+                    ).toLowerCase();
+                    if (
+                        (msg.includes("moveabort") || msg.includes("abort")) &&
+                        msg.includes(", 3)")
+                    ) {
+                        setHasJoinedArena(true);
+                        nextHasJoined = true;
+                    } else {
+                        throw joinError;
+                    }
+                }
+            }
+
             const commonInput = {
                 sender: address,
                 managerId,
@@ -1215,31 +1266,39 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                 lowerStrike: market.lowerStrike,
                 higherStrike: market.higherStrike,
             };
+            const rangeMaxTotalCost = calcMaxTotalCost(
+                latestPreview.mintCost,
+                PREDICT_BINARY_CONFIG.feeBps,
+            );
             const tx =
                 latestPreview.kind === "RANGE"
                     ? createMintRangeTransaction({
                           ...commonInput,
                           quantity: latestPreview.quantity,
-                          depositAmount: latestPreview.mintCost,
+                          depositAmount: rangeMaxTotalCost,
+                          maxTotalCost: rangeMaxTotalCost,
                       })
                     : createMintBreakTransaction({
                           ...commonInput,
                           lowerQuantity: latestPreview.lowerLeg.quantity,
                           upperQuantity: latestPreview.upperLeg.quantity,
-                          depositAmount: latestPreview.mintCost,
+                          depositAmount: rangeMaxTotalCost,
+                          maxTotalCost: rangeMaxTotalCost,
                       });
             const moveCalls =
                 latestPreview.kind === "RANGE"
                     ? describeMintRangeMoveCalls({
                           ...commonInput,
                           quantity: latestPreview.quantity,
-                          depositAmount: latestPreview.mintCost,
+                          depositAmount: rangeMaxTotalCost,
+                          maxTotalCost: rangeMaxTotalCost,
                       })
                     : describeMintBreakMoveCalls({
                           ...commonInput,
                           lowerQuantity: latestPreview.lowerLeg.quantity,
                           upperQuantity: latestPreview.upperLeg.quantity,
-                          depositAmount: latestPreview.mintCost,
+                          depositAmount: rangeMaxTotalCost,
+                          maxTotalCost: rangeMaxTotalCost,
                       });
             console.info("Range card mint transaction before wallet approval", {
                 direction,
@@ -1334,6 +1393,7 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
         dAppKit,
         direction,
         expectedPreviewKey,
+        hasJoinedArena,
         previewReady,
         selectedCandidate,
         selectedDirectionPreview,

@@ -80,6 +80,35 @@ public struct RangeClosed has copy, drop {
     score: u64,
 }
 
+// ===== Break 取引（2 レッグ同時 BET） =====
+
+public struct BreakOpened has copy, drop {
+    arena_id: ID,
+    player: address,
+    manager_id: ID,
+    oracle_id: ID,
+    expiry: u64,
+    lower_strike: u64,
+    upper_strike: u64,
+    quantity: u64,
+    cost: u64,      // 2 レッグ合計コスト
+    fee: u64,
+    score: u64,
+}
+
+public struct BreakClosed has copy, drop {
+    arena_id: ID,
+    player: address,
+    manager_id: ID,
+    oracle_id: ID,
+    expiry: u64,
+    lower_strike: u64,
+    upper_strike: u64,
+    quantity: u64,
+    payout: u64,    // 2 レッグ合計払戻
+    score: u64,
+}
+
 // ===== Admin =====
 
 public struct FeesWithdrawn has copy, drop {
@@ -173,6 +202,43 @@ public(package) fun emit_range_closed(
     event::emit(RangeClosed {
         arena_id, player, manager_id, oracle_id, expiry, lower_strike,
         higher_strike, quantity, payout, score,
+    });
+}
+
+public(package) fun emit_break_opened(
+    arena_id: ID,
+    player: address,
+    manager_id: ID,
+    oracle_id: ID,
+    expiry: u64,
+    lower_strike: u64,
+    upper_strike: u64,
+    quantity: u64,
+    cost: u64,
+    fee: u64,
+    score: u64,
+) {
+    event::emit(BreakOpened {
+        arena_id, player, manager_id, oracle_id, expiry, lower_strike,
+        upper_strike, quantity, cost, fee, score,
+    });
+}
+
+public(package) fun emit_break_closed(
+    arena_id: ID,
+    player: address,
+    manager_id: ID,
+    oracle_id: ID,
+    expiry: u64,
+    lower_strike: u64,
+    upper_strike: u64,
+    quantity: u64,
+    payout: u64,
+    score: u64,
+) {
+    event::emit(BreakClosed {
+        arena_id, player, manager_id, oracle_id, expiry, lower_strike,
+        upper_strike, quantity, payout, score,
     });
 }
 

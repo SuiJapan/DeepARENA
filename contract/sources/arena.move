@@ -31,6 +31,7 @@ const EAlreadyJoined: u64 = 3;
 const ENotManagerOwner: u64 = 4;
 const EFeeBpsTooHigh: u64 = 5;
 const EArenaNotEnded: u64 = 6;
+const EArenaPaused: u64 = 7;
 
 // ===== 構造体 =====
 
@@ -42,12 +43,12 @@ public struct AdminCap has key, store {
 /// プレイヤーごとの統計。PnL ベースのスコアを保持する。
 public struct PlayerStats has store {
     manager_id: ID,
-    /// PnL スコア: (balance + cumulative_payout) - cumulative_deposited
-    /// アンダーフロー時は 0
+    /// 純取引損益スコア: max(0, cumulative_payout - cumulative_cost - cumulative_fee_paid)
+    /// 外部入金に左右されない「取引だけの純損益」を計測する。
     score: u64,
-    cumulative_deposited: u64,
-    cumulative_payout: u64,
-    cumulative_fee_paid: u64,
+    cumulative_cost: u64,       // BET コストの累計（手数料除く）
+    cumulative_payout: u64,     // CLAIM 払戻の累計
+    cumulative_fee_paid: u64,   // 支払手数料の累計
     bet_count: u64,
     joined_at_ms: u64,
 }
@@ -60,6 +61,7 @@ public struct Arena<phantom Quote> has key {
     start_ms: u64,
     end_ms: u64,
     fee_bps: u64,
+    paused: bool,
     fee_vault: Balance<Quote>,
     players: Table<address, PlayerStats>,
     manager_to_player: Table<ID, address>,
@@ -94,6 +96,7 @@ public fun create_arena<Quote>(
         start_ms,
         end_ms,
         fee_bps,
+        paused: false,
         fee_vault: sui::balance::zero<Quote>(),
         players: table::new(ctx),
         manager_to_player: table::new(ctx),
@@ -126,7 +129,7 @@ public fun join_arena<Quote>(
     arena.players.add(player, PlayerStats {
         manager_id,
         score: 0,
-        cumulative_deposited: 0,
+        cumulative_cost: 0,
         cumulative_payout: 0,
         cumulative_fee_paid: 0,
         bet_count: 0,
@@ -140,9 +143,10 @@ public fun join_arena<Quote>(
 
 // ===== Public(package) 関数（bet / admin からのみ呼ぶ） =====
 
-/// アリーナが Active 状態であることを検証する。
+/// アリーナが Active かつ pause されていないことを検証する。
 public(package) fun assert_active<Quote>(arena: &Arena<Quote>) {
     assert!(arena.status == STATUS_ACTIVE, EArenaNotActive);
+    assert!(!arena.paused, EArenaPaused);
 }
 
 /// プレイヤーが登録済みかつ manager ID が一致することを検証する。
@@ -155,31 +159,27 @@ public(package) fun assert_player<Quote>(
     assert!(arena.players[player].manager_id == manager_id, EManagerMismatch);
 }
 
-/// PnL スコアを更新する。BET 時と CLAIM 時の両方から呼ぶ。
+/// PnL スコアを更新する。BET 時は cost_delta+fee_paid を渡し payout_delta=0。
+/// CLAIM 時は payout_delta を渡し cost_delta=fee_paid=0。
 ///
-/// - deposited_delta: 今回 manager に新規入金した額（BET の deposit_amount）
-/// - payout_delta: 今回 CLAIM で受け取った払戻額
-/// - fee_paid: 今回徴収した手数料額
-/// - current_balance: 更新後の manager.balance<Quote>()
-///
-/// score = max(0, (current_balance + cumulative_payout + payout_delta) - (cumulative_deposited + deposited_delta))
+/// score = max(0, cumulative_payout - cumulative_cost - cumulative_fee_paid)
+/// 外部入金に左右されない純取引損益。
 public(package) fun update_score<Quote>(
     arena: &mut Arena<Quote>,
     player: address,
-    current_balance: u64,
-    deposited_delta: u64,
+    cost_delta: u64,
     payout_delta: u64,
     fee_paid: u64,
 ): u64 {
     let stats = &mut arena.players[player];
-    stats.cumulative_deposited = stats.cumulative_deposited + deposited_delta;
+    stats.cumulative_cost = stats.cumulative_cost + cost_delta;
     stats.cumulative_payout = stats.cumulative_payout + payout_delta;
     stats.cumulative_fee_paid = stats.cumulative_fee_paid + fee_paid;
     stats.bet_count = stats.bet_count + 1;
 
-    let total_out = current_balance + stats.cumulative_payout;
-    let score = if (total_out > stats.cumulative_deposited) {
-        total_out - stats.cumulative_deposited
+    let total_spent = stats.cumulative_cost + stats.cumulative_fee_paid;
+    let score = if (stats.cumulative_payout > total_spent) {
+        stats.cumulative_payout - total_spent
     } else {
         0
     };
@@ -211,6 +211,11 @@ public(package) fun set_active<Quote>(arena: &mut Arena<Quote>) {
     arena.status = STATUS_ACTIVE;
 }
 
+/// BET を一時停止 / 再開する（AdminCap で呼ぶ）。
+public(package) fun set_paused<Quote>(arena: &mut Arena<Quote>, paused: bool) {
+    arena.paused = paused;
+}
+
 /// アリーナを Settled 状態に移行する。end_ms 経過後のみ可。
 public(package) fun set_settled<Quote>(arena: &mut Arena<Quote>, clock: &Clock) {
     assert!(clock.timestamp_ms() >= arena.end_ms, EArenaNotEnded);
@@ -229,6 +234,7 @@ public fun fee_bps<Quote>(arena: &Arena<Quote>): u64 { arena.fee_bps }
 public fun predict_id<Quote>(arena: &Arena<Quote>): ID { arena.predict_id }
 public fun status<Quote>(arena: &Arena<Quote>): u8 { arena.status }
 public fun player_count<Quote>(arena: &Arena<Quote>): u64 { arena.player_count }
+public fun is_paused<Quote>(arena: &Arena<Quote>): bool { arena.paused }
 public fun bps_denom(): u64 { BPS_DENOM }
 
 public fun player_score<Quote>(arena: &Arena<Quote>, player: address): u64 {
@@ -241,7 +247,7 @@ public fun player_score<Quote>(arena: &Arena<Quote>, player: address): u64 {
 
 public fun player_stats<Quote>(arena: &Arena<Quote>, player: address): (u64, u64, u64, u64, u64) {
     let s = &arena.players[player];
-    (s.score, s.cumulative_deposited, s.cumulative_payout, s.cumulative_fee_paid, s.bet_count)
+    (s.score, s.cumulative_cost, s.cumulative_payout, s.cumulative_fee_paid, s.bet_count)
 }
 
 public fun manager_id_of<Quote>(arena: &Arena<Quote>, player: address): ID {
@@ -270,6 +276,7 @@ public fun create_arena_for_testing<Quote>(
         start_ms,
         end_ms,
         fee_bps,
+        paused: false,
         fee_vault: sui::balance::zero<Quote>(),
         players: table::new(ctx),
         manager_to_player: table::new(ctx),
@@ -288,7 +295,7 @@ public fun insert_player_for_testing<Quote>(
     arena.players.add(player, PlayerStats {
         manager_id,
         score: 0,
-        cumulative_deposited: 0,
+        cumulative_cost: 0,
         cumulative_payout: 0,
         cumulative_fee_paid: 0,
         bet_count: 0,
@@ -308,8 +315,8 @@ public fun destroy_arena_for_testing<Quote>(arena: Arena<Quote>) {
         ..
     } = arena;
     object::delete(id);
-    fee_vault.destroy_zero();
-    // Table は要素が残っていても unit_test::destroy で解放できる
+    // fee_vault に残高がある場合も unit_test::destroy で解放できる
+    std::unit_test::destroy(fee_vault);
     std::unit_test::destroy(players);
     std::unit_test::destroy(manager_to_player);
 }

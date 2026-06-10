@@ -14,6 +14,9 @@ export const PREDICT_BINARY_CONFIG = {
     priceScale: 1_000_000_000n,
     quantityUnit: 1_000_000n,
     fullnodeJsonRpcUrl: "https://fullnode.testnet.sui.io",
+    deepArenaPackageId: deepArenaMockConfig.deepArenaPackageId,
+    arenaObjectId: deepArenaMockConfig.arenaObjectId,
+    feeBps: deepArenaMockConfig.feeBps,
 } as const;
 
 export function predictBinaryExplorerUrl(digest: string): string {
