@@ -1,4 +1,4 @@
-export type DeepArenaNetwork = "testnet" | "mock";
+export type DeepArenaNetwork = "testnet" | "mock" | "contract";
 
 export interface DeepArenaConfig {
     network: DeepArenaNetwork;
@@ -10,6 +10,9 @@ export interface DeepArenaConfig {
     quoteDecimals: number;
     plpCoinType: string;
     predictServerUrl: string;
+    deepArenaPackageId: string;
+    arenaObjectId: string;
+    feeBps: number;
 }
 
 // Mock dashboard configuration based on the current Predict testnet documentation.
@@ -25,4 +28,11 @@ export const deepArenaMockConfig: DeepArenaConfig = {
     quoteDecimals: 6,
     plpCoinType: "0xf5ea2b3749c65d6e56507cc35388719aadb28f9cab873696a2f8687f5c785138::plp::PLP",
     predictServerUrl: "https://predict-server.testnet.mystenlabs.com",
+    deepArenaPackageId:
+        process.env.NEXT_PUBLIC_DEEP_ARENA_PACKAGE_ID ??
+        "0xb3b546a75389e222acd043d4ce5a4d85b9a616ec55f98ede5e50d89b019a22aa",
+    arenaObjectId:
+        process.env.NEXT_PUBLIC_ARENA_OBJECT_ID ??
+        "0xdb259dd56458b3308dcd0536ced30e5145d1168dcd958539820e512686025bdf",
+    feeBps: 300,
 };

@@ -13,6 +13,7 @@ import { formatTokenAmount, parseTokenAmount } from "@/src/lib/plp-sandbox/amoun
 import {
     type BtcBinaryMarket,
     type BudgetedTradePreview,
+    checkArenaPlayerJoined,
     findMintEvent,
     findPredictManager,
     type MintEvent,
@@ -30,6 +31,9 @@ import { PREDICT_BINARY_CONFIG, predictBinaryExplorerUrl } from "@/src/lib/predi
 import { readSuiEventPayloads } from "@/src/lib/predict-binary/events";
 import { formatBinaryOddsFromQuantity } from "@/src/lib/predict-binary/odds";
 import {
+    calcFee,
+    calcMaxTotalCost,
+    createJoinArenaTransaction,
     createMintBinaryTransaction,
     createPredictManagerTransaction,
     createRedeemBinaryTransaction,
@@ -37,6 +41,12 @@ import {
     describeMintBinaryMoveCalls,
 } from "@/src/lib/predict-binary/transactions";
 import { isWalletUserRejection, readWalletCancellationDebug } from "@/src/lib/wallet-errors";
+
+/** Sui MoveAbort で EAlreadyJoined(=3) が返った場合に true */
+function isArenaAlreadyJoinedError(error: unknown): boolean {
+    const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    return (msg.includes("moveabort") || msg.includes("abort")) && msg.includes(", 3)");
+}
 
 export type BinaryDirection = "UP" | "DOWN";
 export type BinaryTxStatus =
@@ -326,10 +336,11 @@ function getBetAvailability({
 }): BetAvailability {
     const previewReason = state.debug?.reason ?? state.error;
     const previewOk =
-        state.status === "READY" &&
         Boolean(state.preview) &&
         state.previewKey !== null &&
-        state.previewKey === expectedPreviewKey;
+        state.previewKey === expectedPreviewKey &&
+        state.status !== "ERROR" &&
+        state.status !== "UNAVAILABLE";
     const base = {
         previewKey: state.previewKey,
         expectedPreviewKey,
@@ -344,14 +355,15 @@ function getBetAvailability({
     if (!hasPositiveAmount) {
         return { ...base, canBet: false, reason: "Enter an amount." };
     }
-    if (state.status === "PREVIEWING") {
-        return { ...base, canBet: false, reason: "Odds unavailable. Please wait or refresh." };
-    }
     if (!state.preview || state.status === "ERROR" || state.status === "UNAVAILABLE") {
-        return { ...base, canBet: false, reason: "Odds unavailable. Please wait or refresh." };
-    }
-    if (state.previewKey !== expectedPreviewKey) {
-        return { ...base, canBet: false, reason: "Preview is stale. Please wait." };
+        return {
+            ...base,
+            canBet: false,
+            reason:
+                state.status === "PREVIEWING"
+                    ? "Calculating odds. Please wait."
+                    : "Odds unavailable. Please wait or refresh.",
+        };
     }
     if (state.preview.quantity <= 0n || state.preview.mintCost <= 0n) {
         return { ...base, canBet: false, reason: "Market is not currently mintable." };
@@ -429,13 +441,15 @@ export function usePredictBinary(
     const sidePositionRestoreRef = useRef(0);
     const loggedPreviewErrorsRef = useRef<Set<string>>(new Set());
     const previewKeyRef = useRef<string | null>(null);
-    const [amount, setAmount] = useState("");
+    const hasSuccessfulPreviewRef = useRef(false);
+    const [amount, setAmount] = useState("10");
     const [txStatus, setTxStatus] = useState<BinaryTxStatus>("READY");
     const [previewStatus, setPreviewStatus] = useState<BinaryPreviewStatus>("IDLE");
     const [message, setMessage] = useState("READY");
     const [walletBalance, setWalletBalance] = useState(0n);
     const [managerId, setManagerId] = useState<string | null>(null);
     const [managerBalance, setManagerBalance] = useState(0n);
+    const [hasJoinedArena, setHasJoinedArena] = useState(false);
     const [market, setMarket] = useState<BtcBinaryMarket | null>(null);
     const [upPreview, setUpPreview] = useState<SidePreviewState>({
         status: "IDLE",
@@ -458,8 +472,24 @@ export function usePredictBinary(
     const [lastRedeem, setLastRedeem] = useState<RedeemEvent | null>(null);
     const [lastDigest, setLastDigest] = useState<string | null>(null);
 
+    useEffect(() => {
+        hasSuccessfulPreviewRef.current = Boolean(upPreview.preview || downPreview.preview);
+    }, [upPreview.preview, downPreview.preview]);
+
     const address = account?.address ?? null;
     const isTestnet = network === PREDICT_BINARY_CONFIG.network;
+
+    // ウォレット接続時にオンチェーンで参加済みか確認し、不要な join TX を防ぐ
+    useEffect(() => {
+        if (!address || !isTestnet) {
+            setHasJoinedArena(false);
+            return;
+        }
+        void checkArenaPlayerJoined(address).then((joined) => {
+            if (joined) setHasJoinedArena(true);
+        });
+    }, [address, isTestnet]);
+
     const isBusy = txStatus === "CONFIRM IN WALLET" || txStatus === "SUBMITTING";
     const isBettingOpen = roundMarket?.state === "BETTING_OPEN";
     const oracleTimestampMs = roundMarket?.currentOracle?.timestampMs ?? null;
@@ -650,21 +680,29 @@ export function usePredictBinary(
                         return;
                     }
                     const error = readErrorMessage(caught);
-                    setUpPreview({
-                        status: "ERROR",
-                        preview: null,
-                        error,
-                        debug: null,
-                        previewKey,
-                    });
-                    setDownPreview({
-                        status: "ERROR",
-                        preview: null,
-                        error,
-                        debug: null,
-                        previewKey,
-                    });
-                    setPreviewStatus("ERROR");
+                    setUpPreview((current) =>
+                        current.preview
+                            ? { ...current, status: "READY", error }
+                            : {
+                                  status: "ERROR",
+                                  preview: null,
+                                  error,
+                                  debug: null,
+                                  previewKey,
+                              },
+                    );
+                    setDownPreview((current) =>
+                        current.preview
+                            ? { ...current, status: "READY", error }
+                            : {
+                                  status: "ERROR",
+                                  preview: null,
+                                  error,
+                                  debug: null,
+                                  previewKey,
+                              },
+                    );
+                    setPreviewStatus(hasSuccessfulPreviewRef.current ? "READY" : "ERROR");
                     warnPreviewFailure({ direction: "UP", error, debug: null });
                     warnPreviewFailure({ direction: "DOWN", error, debug: null });
                     return;
@@ -694,21 +732,39 @@ export function usePredictBinary(
                     }
                     hasError = true;
                     if (direction === "UP") {
-                        setUpPreview({
-                            status: "ERROR",
-                            preview: null,
-                            error: side.error ?? "Preview failed",
-                            debug: side.debug,
-                            previewKey: result.previewKey,
-                        });
+                        setUpPreview((current) =>
+                            current.preview && current.previewKey === result.previewKey
+                                ? {
+                                      ...current,
+                                      status: "READY",
+                                      error: side.error ?? "Preview failed",
+                                      debug: side.debug,
+                                  }
+                                : {
+                                      status: "ERROR",
+                                      preview: null,
+                                      error: side.error ?? "Preview failed",
+                                      debug: side.debug,
+                                      previewKey: result.previewKey,
+                                  },
+                        );
                     } else {
-                        setDownPreview({
-                            status: "ERROR",
-                            preview: null,
-                            error: side.error ?? "Preview failed",
-                            debug: side.debug,
-                            previewKey: result.previewKey,
-                        });
+                        setDownPreview((current) =>
+                            current.preview && current.previewKey === result.previewKey
+                                ? {
+                                      ...current,
+                                      status: "READY",
+                                      error: side.error ?? "Preview failed",
+                                      debug: side.debug,
+                                  }
+                                : {
+                                      status: "ERROR",
+                                      preview: null,
+                                      error: side.error ?? "Preview failed",
+                                      debug: side.debug,
+                                      previewKey: result.previewKey,
+                                  },
+                        );
                     }
                     warnPreviewFailure({
                         direction,
@@ -720,7 +776,13 @@ export function usePredictBinary(
                 applySide("UP", result.up);
                 applySide("DOWN", result.down);
 
-                setPreviewStatus(hasReady ? "READY" : hasError ? "ERROR" : "UNAVAILABLE");
+                setPreviewStatus(
+                    hasReady || hasSuccessfulPreviewRef.current
+                        ? "READY"
+                        : hasError
+                          ? "ERROR"
+                          : "UNAVAILABLE",
+                );
                 const up = result.up.preview;
                 const down = result.down.preview;
                 if (up || down) {
@@ -843,22 +905,41 @@ export function usePredictBinary(
                     });
                 } catch (caught) {
                     const error = readErrorMessage(caught);
-                    const unavailableState = {
-                        status: "ERROR" as const,
-                        preview: null,
-                        error,
-                        debug: null,
-                        previewKey: null,
-                    };
                     if (direction === "UP") {
-                        setUpPreview(unavailableState);
+                        setUpPreview((current) =>
+                            current.preview
+                                ? { ...current, status: "READY", error }
+                                : {
+                                      status: "ERROR",
+                                      preview: null,
+                                      error,
+                                      debug: null,
+                                      previewKey: null,
+                                  },
+                        );
                     } else {
-                        setDownPreview(unavailableState);
+                        setDownPreview((current) =>
+                            current.preview
+                                ? { ...current, status: "READY", error }
+                                : {
+                                      status: "ERROR",
+                                      preview: null,
+                                      error,
+                                      debug: null,
+                                      previewKey: null,
+                                  },
+                        );
                     }
                     const availability = getBetAvailability({
                         canTrade: canTradeBase,
                         hasPositiveAmount: budget > 0n,
-                        state: unavailableState,
+                        state: {
+                            status: "ERROR",
+                            preview: null,
+                            error,
+                            debug: null,
+                            previewKey: null,
+                        },
                         expectedPreviewKey,
                     });
                     logAvailability(availability);
@@ -867,22 +948,41 @@ export function usePredictBinary(
                     return;
                 }
                 if (freshPreviewResult.previewKey !== expectedPreviewKey) {
-                    const staleState = {
-                        status: "ERROR" as const,
-                        preview: null,
-                        error: "Preview is stale",
-                        debug: null,
-                        previewKey: freshPreviewResult.previewKey,
-                    };
                     if (direction === "UP") {
-                        setUpPreview(staleState);
+                        setUpPreview((current) =>
+                            current.preview
+                                ? { ...current, status: "READY", error: "Preview is stale" }
+                                : {
+                                      status: "ERROR",
+                                      preview: null,
+                                      error: "Preview is stale",
+                                      debug: null,
+                                      previewKey: freshPreviewResult.previewKey,
+                                  },
+                        );
                     } else {
-                        setDownPreview(staleState);
+                        setDownPreview((current) =>
+                            current.preview
+                                ? { ...current, status: "READY", error: "Preview is stale" }
+                                : {
+                                      status: "ERROR",
+                                      preview: null,
+                                      error: "Preview is stale",
+                                      debug: null,
+                                      previewKey: freshPreviewResult.previewKey,
+                                  },
+                        );
                     }
                     const availability = getBetAvailability({
                         canTrade: canTradeBase,
                         hasPositiveAmount: budget > 0n,
-                        state: staleState,
+                        state: {
+                            status: "ERROR",
+                            preview: null,
+                            error: "Preview is stale",
+                            debug: null,
+                            previewKey: freshPreviewResult.previewKey,
+                        },
                         expectedPreviewKey,
                     });
                     logAvailability(availability);
@@ -999,17 +1099,55 @@ export function usePredictBinary(
                 ) {
                     throw new Error("Round changed before wallet confirmation");
                 }
+                // Arena への参加登録が未完了の場合は先に join する
+                let nextHasJoined = hasJoinedArena;
+                if (!nextHasJoined && nextManagerId) {
+                    // state が stale の可能性があるのでオンチェーンで再確認
+                    nextHasJoined = await checkArenaPlayerJoined(address);
+                    if (nextHasJoined) setHasJoinedArena(true);
+                }
+                if (!nextHasJoined && nextManagerId) {
+                    setTxStatus("CONFIRM IN WALLET");
+                    setMessage("CONFIRM IN WALLET (Arena Join)");
+                    try {
+                        const joinResult = await dAppKit.signAndExecuteTransaction({
+                            transaction: createJoinArenaTransaction({
+                                sender: address,
+                                managerId: nextManagerId,
+                            }),
+                        });
+                        const joinDigest = readDigest(joinResult);
+                        await client.core.waitForTransaction({
+                            digest: joinDigest,
+                            timeout: 60_000,
+                        });
+                        setHasJoinedArena(true);
+                        nextHasJoined = true;
+                    } catch (joinError) {
+                        // 既に参加済み (EAlreadyJoined = 3) の場合はそのまま続行
+                        if (isArenaAlreadyJoinedError(joinError)) {
+                            setHasJoinedArena(true);
+                            nextHasJoined = true;
+                        } else {
+                            throw joinError;
+                        }
+                    }
+                }
+
+                const maxTotalCost = calcMaxTotalCost(
+                    latestPreview.mintCost,
+                    PREDICT_BINARY_CONFIG.feeBps,
+                );
+                const fee = calcFee(latestPreview.mintCost, PREDICT_BINARY_CONFIG.feeBps);
                 const knownManagerBalance = nextManagerId ? managerBalance : 0n;
                 const depositAmount =
-                    latestPreview.mintCost > knownManagerBalance
-                        ? latestPreview.mintCost - knownManagerBalance
-                        : 0n;
+                    maxTotalCost > knownManagerBalance ? maxTotalCost - knownManagerBalance : 0n;
 
                 setMessage(
                     `Using ${formatTokenAmount(
-                        latestPreview.mintCost,
+                        latestPreview.mintCost + fee,
                         PREDICT_BINARY_CONFIG.quoteDecimals,
-                    )} DUSDC`,
+                    )} DUSDC (含む手数料 ${formatTokenAmount(fee, PREDICT_BINARY_CONFIG.quoteDecimals)})`,
                 );
                 const mintInput = {
                     sender: address,
@@ -1020,6 +1158,7 @@ export function usePredictBinary(
                     isUp: direction === "UP",
                     quantity: latestPreview.quantity,
                     depositAmount,
+                    maxTotalCost,
                 };
                 const mintMoveCalls = describeMintBinaryMoveCalls(mintInput);
                 console.info("Binary bet mint transaction before wallet approval", {
@@ -1163,6 +1302,7 @@ export function usePredictBinary(
             amount,
             client,
             dAppKit,
+            hasJoinedArena,
             isBettingOpen,
             isBusy,
             isTestnet,
@@ -1284,28 +1424,26 @@ export function usePredictBinary(
             lastRedeem,
             lastEntryOdds,
             previewStatus,
-            upOdds:
-                upPreview.status === "READY" && upPreview.preview
-                    ? formatBinaryOddsFromQuantity(
-                          upPreview.preview.quantity,
-                          upPreview.preview.mintCost,
-                      )
-                    : upPreview.status === "PREVIEWING"
-                      ? "Calculating..."
-                      : upPreview.status === "ERROR"
-                        ? "Odds unavailable"
-                        : "--",
-            downOdds:
-                downPreview.status === "READY" && downPreview.preview
-                    ? formatBinaryOddsFromQuantity(
-                          downPreview.preview.quantity,
-                          downPreview.preview.mintCost,
-                      )
-                    : downPreview.status === "PREVIEWING"
-                      ? "Calculating..."
-                      : downPreview.status === "ERROR"
-                        ? "Odds unavailable"
-                        : "--",
+            upOdds: upPreview.preview
+                ? formatBinaryOddsFromQuantity(
+                      upPreview.preview.quantity,
+                      upPreview.preview.mintCost,
+                  )
+                : upPreview.status === "PREVIEWING"
+                  ? "Calculating..."
+                  : upPreview.status === "ERROR"
+                    ? "Odds unavailable"
+                    : "--",
+            downOdds: downPreview.preview
+                ? formatBinaryOddsFromQuantity(
+                      downPreview.preview.quantity,
+                      downPreview.preview.mintCost,
+                  )
+                : downPreview.status === "PREVIEWING"
+                  ? "Calculating..."
+                  : downPreview.status === "ERROR"
+                    ? "Odds unavailable"
+                    : "--",
             costLabel: lastMint
                 ? `${formatTokenAmount(lastMint.cost, PREDICT_BINARY_CONFIG.quoteDecimals)} DUSDC`
                 : null,
@@ -1344,6 +1482,7 @@ export function usePredictBinary(
                 ? `${formatTokenAmount(lastRedeem.payout, PREDICT_BINARY_CONFIG.quoteDecimals)} DUSDC`
                 : null,
             explorerUrl: lastDigest ? predictBinaryExplorerUrl(lastDigest) : null,
+            feeBpsLabel: `現在手数料 ${PREDICT_BINARY_CONFIG.feeBps / 100}%`,
             placeBet,
         };
     }, [

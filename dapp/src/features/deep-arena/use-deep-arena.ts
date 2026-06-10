@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { DeepArenaClient } from "@/src/lib/deep-arena/client";
-import { createMockDeepArenaClient } from "@/src/lib/deep-arena/mock-client";
+import { createDeepArenaClient } from "@/src/lib/deep-arena/factory";
 import type {
     ActionPreview,
     BinaryActionInput,
@@ -24,7 +24,7 @@ async function loadSnapshot(client: DeepArenaClient): Promise<DeepArenaSnapshot>
 }
 
 export function useDeepArena(clientOverride?: DeepArenaClient) {
-    const mockClient = useMemo(createMockDeepArenaClient, []);
+    const mockClient = useMemo(createDeepArenaClient, []);
     const client = clientOverride ?? mockClient;
     const [snapshot, setSnapshot] = useState<DeepArenaSnapshot | null>(null);
     const [preview, setPreview] = useState<ActionPreview | null>(null);

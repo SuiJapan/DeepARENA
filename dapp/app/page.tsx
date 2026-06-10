@@ -157,11 +157,15 @@ function NextRangeRoundCard({ roundMarket }: { roundMarket: PredictRoundMarket |
         console.info("Range card display state", range.displayDebug);
     }, [range.displayDebug]);
     const statusMessage =
-        range.direction === "BREAK"
-            ? (range.breakPayoutLabel ?? "BREAK is a two-leg position: lower DOWN and upper UP.")
-            : range.expectedPayout
-              ? `Max payout ${range.expectedPayout}`
-              : (range.unavailableReason ?? range.message);
+        range.txStatus === "FAILED" ||
+        range.txStatus === "SUBMITTING" ||
+        range.txStatus === "CONFIRM IN WALLET"
+            ? range.message
+            : range.direction === "BREAK"
+              ? (range.breakPayoutLabel ?? "BREAK is a two-leg position: lower DOWN and upper UP.")
+              : range.expectedPayout
+                ? `Max payout ${range.expectedPayout}`
+                : (range.unavailableReason ?? range.message);
 
     return (
         <section className="trade-card range next-range-card">

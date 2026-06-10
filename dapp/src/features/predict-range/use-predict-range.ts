@@ -11,6 +11,7 @@ import type { PredictRoundMarket } from "@/src/features/predict-round/use-predic
 import { requestBalanceRefresh } from "@/src/lib/balance-refresh";
 import { formatTokenAmount, parseTokenAmount } from "@/src/lib/plp-sandbox/amounts";
 import {
+    checkArenaPlayerJoined,
     findPredictManager,
     type MintedPositionEvent,
     POSITION_MINTED_EVENT_TYPE,
@@ -22,6 +23,8 @@ import {
 import { PREDICT_BINARY_CONFIG } from "@/src/lib/predict-binary/config";
 import { formatBinaryOddsFromQuantity } from "@/src/lib/predict-binary/odds";
 import {
+    calcMaxTotalCost,
+    createJoinArenaTransaction,
     createMintBreakTransaction,
     createMintRangeTransaction,
     createPredictManagerTransaction,
@@ -156,6 +159,18 @@ type DirectionPreviewResult =
 const successfulRangePreviewByKey = new Map<string, CachedRangePreview>();
 const inFlightRangePreviewByKey = new Map<string, Promise<DirectionPreviewResult>>();
 const rangePreviewCooldownByKey = new Map<string, number>();
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+    });
+    return Promise.race([promise, timeout]).finally(() => {
+        if (timeoutId !== null) {
+            clearTimeout(timeoutId);
+        }
+    });
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -712,7 +727,7 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
     const cooldownByDisplayPreviewKeyRef = useRef<Map<string, number>>(new Map());
     const rangeSelectionDebugKeyRef = useRef<string | null>(null);
     const [direction, setDirection] = useState<RangeDirection>("RANGE");
-    const [amount, setAmount] = useState("1");
+    const [amount, setAmount] = useState("10");
     const [previewState, setPreviewState] = useState<RangePreviewState>(emptyPreview("IDLE"));
     const [message, setMessage] = useState("Choose RANGE for the current BTC band.");
     const [txStatus, setTxStatus] = useState<RangeTxStatus>("READY");
@@ -721,6 +736,19 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
         cost: bigint;
         entryOdds: string;
     } | null>(null);
+    const [hasJoinedArena, setHasJoinedArena] = useState(false);
+
+    // ウォレット接続時にオンチェーンで参加済みか確認し、不要な join TX を防ぐ
+    useEffect(() => {
+        if (!address || !isTestnet) {
+            setHasJoinedArena(false);
+            return;
+        }
+        void checkArenaPlayerJoined(address).then((joined) => {
+            if (joined) setHasJoinedArena(true);
+        });
+    }, [address, isTestnet]);
+
     const isBusy = txStatus === "CONFIRM IN WALLET" || txStatus === "SUBMITTING";
     const isBettingOpen = roundMarket?.state === "BETTING_OPEN";
 
@@ -751,10 +779,10 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
         selectedCandidate && direction === "RANGE"
             ? selectedCandidate.rangePreviewKey
             : selectedCandidate?.breakPreviewKey;
+    // PREVIEWING 中も旧オッズで BET 可能とする。bet callback が送信直前に fresh re-fetch を行う
     const previewReady =
-        previewState.status === "READY" &&
-        selectedDirectionPreview !== undefined &&
-        selectedPreviewKey === expectedPreviewKey;
+        (previewState.status === "READY" || previewState.status === "PREVIEWING") &&
+        selectedDirectionPreview !== undefined;
     const canEnter =
         Boolean(address) &&
         isTestnet &&
@@ -777,7 +805,7 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                 : !selectedDirectionPreview
                   ? (previewState.error ?? "Odds unavailable")
                   : !previewReady
-                    ? "Preview is stale"
+                    ? "Odds unavailable"
                     : isBusy
                       ? "Transaction pending"
                       : null;
@@ -1004,10 +1032,39 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                 if (!partialFailureReason) {
                     lastSuccessfulDisplayPreviewKeyRef.current = displayPreviewKey;
                 }
-                setPreviewState({
-                    status: "READY",
-                    selected: preview,
-                    error: partialFailureReason,
+                setPreviewState((current) => {
+                    const currentKey =
+                        current.selected && budget > 0n
+                            ? buildDisplayPreviewKey({
+                                  address,
+                                  market: current.selected.market,
+                                  budget,
+                              })
+                            : null;
+                    const canReuseCurrent = currentKey === displayPreviewKey;
+                    return {
+                        status: "READY",
+                        selected: {
+                            ...preview,
+                            rangePreview:
+                                preview.rangePreview ??
+                                (canReuseCurrent ? (current.selected?.rangePreview ?? null) : null),
+                            rangePreviewKey:
+                                preview.rangePreviewKey ??
+                                (canReuseCurrent
+                                    ? (current.selected?.rangePreviewKey ?? null)
+                                    : null),
+                            breakPreview:
+                                preview.breakPreview ??
+                                (canReuseCurrent ? (current.selected?.breakPreview ?? null) : null),
+                            breakPreviewKey:
+                                preview.breakPreviewKey ??
+                                (canReuseCurrent
+                                    ? (current.selected?.breakPreviewKey ?? null)
+                                    : null),
+                        },
+                        error: partialFailureReason,
+                    };
                 });
             } catch (caught) {
                 if (previewRequestRef.current !== requestId) {
@@ -1063,19 +1120,66 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                 setMessage("Odds unavailable. Please wait or refresh.");
                 return;
             }
+            setTxStatus("SUBMITTING");
+            setMessage("Preparing transaction");
             const market = selectedCandidate.market;
-            const latest = await fetchRangePreview({ direction, address, market, budget });
-            if (!latest.ok || latest.previewKey !== expectedPreviewKey) {
-                setPreviewState((current) => ({
-                    status: "ERROR",
-                    selected: current.selected,
-                    error: "Odds unavailable",
-                }));
-                setTxStatus("FAILED");
-                setMessage("Odds unavailable. Please wait or refresh.");
-                return;
+            let latestPreview = selectedDirectionPreview;
+            let latestPreviewKey = selectedPreviewKey;
+            let previewSource = "display-preview";
+            if (latestPreviewKey !== expectedPreviewKey) {
+                let latest: RangePreviewApiResponse;
+                try {
+                    latest = await withTimeout(
+                        fetchRangePreview({ direction, address, market, budget }),
+                        15_000,
+                        "Range preview timed out",
+                    );
+                } catch (caught) {
+                    console.info("Range enter preview unavailable", {
+                        direction,
+                        expectedPreviewKey,
+                        reason: caught instanceof Error ? caught.message : String(caught),
+                    });
+                    setPreviewState((current) => ({
+                        status: current.selected ? "READY" : "ERROR",
+                        selected: current.selected,
+                        error: current.selected ? current.error : "Odds unavailable",
+                    }));
+                    setTxStatus("FAILED");
+                    setMessage("Odds unavailable. Please wait or refresh.");
+                    return;
+                }
+                if (process.env.NODE_ENV !== "production") {
+                    console.info("Range enter latest preview", {
+                        direction,
+                        ok: latest.ok,
+                        previewKey: latest.previewKey,
+                        expectedPreviewKey,
+                        reason: latest.ok ? null : latest.reason,
+                    });
+                }
+                if (!latest.ok || latest.previewKey !== expectedPreviewKey) {
+                    setPreviewState((current) => ({
+                        status: current.selected ? "READY" : "ERROR",
+                        selected: current.selected,
+                        error: current.selected ? current.error : "Odds unavailable",
+                    }));
+                    setTxStatus("FAILED");
+                    setMessage("Odds unavailable. Please wait or refresh.");
+                    return;
+                }
+                latestPreview = previewFromApi(latest);
+                latestPreviewKey = latest.previewKey;
+                previewSource = "latest-preview";
             }
-            const latestPreview = previewFromApi(latest);
+            if (process.env.NODE_ENV !== "production") {
+                console.info("Range enter preview selected", {
+                    direction,
+                    previewSource,
+                    previewKey: latestPreviewKey,
+                    expectedPreviewKey,
+                });
+            }
             if (
                 latestPreview.kind !== direction ||
                 latestPreview.mintCost <= 0n ||
@@ -1090,17 +1194,21 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                 selected: {
                     ...selectedCandidate,
                     ...(latestPreview.kind === "RANGE"
-                        ? { rangePreview: latestPreview, rangePreviewKey: latest.previewKey }
-                        : { breakPreview: latestPreview, breakPreviewKey: latest.previewKey }),
+                        ? { rangePreview: latestPreview, rangePreviewKey: latestPreviewKey }
+                        : { breakPreview: latestPreview, breakPreviewKey: latestPreviewKey }),
                 },
                 error: null,
             });
-            setTxStatus("CONFIRM IN WALLET");
-            setMessage("CONFIRM IN WALLET");
-            let managerId = await findPredictManager(address);
+            let managerId = await withTimeout(
+                findPredictManager(address),
+                15_000,
+                "PredictManager lookup timed out",
+            );
             if (!managerId) {
                 const createMoveCalls = describeCreatePredictManagerMoveCalls();
                 console.info("Range manager creation transaction", { moveCalls: createMoveCalls });
+                setTxStatus("CONFIRM IN WALLET");
+                setMessage("CONFIRM IN WALLET");
                 const createResult = await dAppKit.signAndExecuteTransaction({
                     transaction: createPredictManagerTransaction(address),
                 });
@@ -1115,6 +1223,41 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                     throw new Error("PredictManager creation could not be confirmed");
                 }
             }
+            // Arena への参加登録が未完了の場合は先に join する
+            let nextHasJoined = hasJoinedArena;
+            if (!nextHasJoined) {
+                // state が stale の可能性があるのでオンチェーンで再確認
+                nextHasJoined = await checkArenaPlayerJoined(address);
+                if (nextHasJoined) setHasJoinedArena(true);
+            }
+            if (!nextHasJoined) {
+                setTxStatus("CONFIRM IN WALLET");
+                setMessage("CONFIRM IN WALLET (Arena Join)");
+                try {
+                    const joinResult = await dAppKit.signAndExecuteTransaction({
+                        transaction: createJoinArenaTransaction({ sender: address, managerId }),
+                    });
+                    const joinDigest = readDigest(joinResult);
+                    await client.core.waitForTransaction({ digest: joinDigest, timeout: 60_000 });
+                    setHasJoinedArena(true);
+                    nextHasJoined = true;
+                } catch (joinError) {
+                    // 既に参加済み (EAlreadyJoined = 3) の場合はそのまま続行
+                    const msg = (
+                        joinError instanceof Error ? joinError.message : String(joinError)
+                    ).toLowerCase();
+                    if (
+                        (msg.includes("moveabort") || msg.includes("abort")) &&
+                        msg.includes(", 3)")
+                    ) {
+                        setHasJoinedArena(true);
+                        nextHasJoined = true;
+                    } else {
+                        throw joinError;
+                    }
+                }
+            }
+
             const commonInput = {
                 sender: address,
                 managerId,
@@ -1123,31 +1266,39 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                 lowerStrike: market.lowerStrike,
                 higherStrike: market.higherStrike,
             };
+            const rangeMaxTotalCost = calcMaxTotalCost(
+                latestPreview.mintCost,
+                PREDICT_BINARY_CONFIG.feeBps,
+            );
             const tx =
                 latestPreview.kind === "RANGE"
                     ? createMintRangeTransaction({
                           ...commonInput,
                           quantity: latestPreview.quantity,
-                          depositAmount: latestPreview.mintCost,
+                          depositAmount: rangeMaxTotalCost,
+                          maxTotalCost: rangeMaxTotalCost,
                       })
                     : createMintBreakTransaction({
                           ...commonInput,
                           lowerQuantity: latestPreview.lowerLeg.quantity,
                           upperQuantity: latestPreview.upperLeg.quantity,
-                          depositAmount: latestPreview.mintCost,
+                          depositAmount: rangeMaxTotalCost,
+                          maxTotalCost: rangeMaxTotalCost,
                       });
             const moveCalls =
                 latestPreview.kind === "RANGE"
                     ? describeMintRangeMoveCalls({
                           ...commonInput,
                           quantity: latestPreview.quantity,
-                          depositAmount: latestPreview.mintCost,
+                          depositAmount: rangeMaxTotalCost,
+                          maxTotalCost: rangeMaxTotalCost,
                       })
                     : describeMintBreakMoveCalls({
                           ...commonInput,
                           lowerQuantity: latestPreview.lowerLeg.quantity,
                           upperQuantity: latestPreview.upperLeg.quantity,
-                          depositAmount: latestPreview.mintCost,
+                          depositAmount: rangeMaxTotalCost,
+                          maxTotalCost: rangeMaxTotalCost,
                       });
             console.info("Range card mint transaction before wallet approval", {
                 direction,
@@ -1158,6 +1309,8 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                 higherStrikeRaw: market.higherStrike.toString(),
                 mintCost: latestPreview.mintCost.toString(),
             });
+            setTxStatus("CONFIRM IN WALLET");
+            setMessage("CONFIRM IN WALLET");
             const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
             const digest = readDigest(result);
             setTxStatus("SUBMITTING");
@@ -1240,9 +1393,11 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
         dAppKit,
         direction,
         expectedPreviewKey,
+        hasJoinedArena,
         previewReady,
         selectedCandidate,
         selectedDirectionPreview,
+        selectedPreviewKey,
     ]);
 
     return {
@@ -1266,12 +1421,12 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
         rangeOdds: selectedCandidate?.rangePreview
             ? selectedCandidate.rangePreview.liveOdds
             : previewState.status === "PREVIEWING"
-              ? "..."
+              ? "Calculating..."
               : "Unavailable",
         breakOdds: selectedCandidate?.breakPreview
             ? selectedCandidate.breakPreview.liveOdds
             : previewState.status === "PREVIEWING"
-              ? "..."
+              ? "Calculating..."
               : "Unavailable",
         expectedPayout:
             selectedCandidate?.rangePreview?.quantity &&

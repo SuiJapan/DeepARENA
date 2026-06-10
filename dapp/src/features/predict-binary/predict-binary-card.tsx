@@ -97,7 +97,12 @@ export function PredictBinaryCard({
             </fieldset>
 
             <label className="binary-amount">
-                <span>BET AMOUNT</span>
+                <span>
+                    BET AMOUNT{" "}
+                    <small style={{ opacity: 0.6, fontWeight: "normal" }}>
+                        {binary.feeBpsLabel}
+                    </small>
+                </span>
                 <div>
                     <input
                         type="number"

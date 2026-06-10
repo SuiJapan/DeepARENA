@@ -6,6 +6,7 @@ import { readSuiEventPayload } from "./events";
 import { type BudgetedTradePreview, findBudgetedTradePreview, type TradeAmounts } from "./preview";
 import {
     type BinaryMarketKeyInput,
+    calcMaxTotalCost,
     createMintBinaryTransaction,
     createPreviewRangeTradeAmountsTransaction,
     createPreviewTradeAmountsTransaction,
@@ -712,6 +713,109 @@ export async function previewRangeWithinBudgetServerOnly({
     };
 }
 
+export async function previewRangeWithinBudgetFast({
+    client,
+    budget,
+    ...input
+}: RangeKeyInput & {
+    client: SimulateClient;
+    sender: string;
+    budget: bigint;
+}): Promise<RangeTradePreview> {
+    if (budget <= 0n) {
+        throw new Error("Amount must be greater than zero");
+    }
+
+    const seen = new Set<string>();
+    let attempts = 0;
+    let best: RangeTradePreview | null = null;
+    let lastMintCost: string | null = null;
+    let lastRedeemPayout: string | null = null;
+    let lastQuantity = 1n;
+
+    const previewQuantity = async (quantity: bigint): Promise<RangeTradePreview | null> => {
+        const normalized = quantity > 0n ? quantity : 1n;
+        const key = normalized.toString();
+        if (seen.has(key)) {
+            return null;
+        }
+        seen.add(key);
+        attempts += 1;
+        lastQuantity = normalized;
+        const amounts = await previewRangeTradeAmountsServerOnly(client, {
+            ...input,
+            quantity: normalized,
+        });
+        lastMintCost = amounts.mintCost.toString();
+        lastRedeemPayout = amounts.redeemPayout.toString();
+        const candidate = {
+            quantity: normalized,
+            mintCost: amounts.mintCost,
+            redeemPayout: amounts.redeemPayout,
+        };
+        if (amounts.mintCost > 0n && amounts.mintCost <= budget) {
+            if (!best || candidate.quantity > best.quantity) {
+                best = candidate;
+            }
+        }
+        return candidate;
+    };
+
+    let probeQuantity = budget;
+    let probe = await previewQuantity(probeQuantity);
+    for (let probeAttempts = 0; probe?.mintCost === 0n && probeAttempts < 8; probeAttempts += 1) {
+        probeQuantity *= 2n;
+        probe = await previewQuantity(probeQuantity);
+    }
+
+    if (!probe || probe.mintCost <= 0n) {
+        throw new Error("Amount is too small for a mintable range quantity");
+    }
+
+    let nextQuantity = (budget * probe.quantity) / probe.mintCost;
+    if (nextQuantity <= 0n) {
+        nextQuantity = 1n;
+    }
+
+    for (let refineAttempts = 0; refineAttempts < 3; refineAttempts += 1) {
+        const result = await previewQuantity(nextQuantity);
+        if (!result) {
+            nextQuantity += 1n;
+            continue;
+        }
+        if (result.mintCost > 0n) {
+            const adjusted = (budget * result.quantity) / result.mintCost;
+            if (adjusted === nextQuantity) {
+                nextQuantity = result.mintCost <= budget ? nextQuantity + 1n : nextQuantity - 1n;
+            } else {
+                nextQuantity = adjusted > 0n ? adjusted : 1n;
+            }
+        } else {
+            nextQuantity *= 2n;
+        }
+    }
+
+    if (!best) {
+        console.info("Range preview fast search no mintable quantity", {
+            attempts,
+            lastTriedQuantity: lastQuantity.toString(),
+            lastMintCost,
+            lastRedeemPayout,
+            budget: budget.toString(),
+        });
+        throw new Error("Amount is too small for a mintable range quantity");
+    }
+
+    const finalBest = best as RangeTradePreview;
+    console.info("Range preview fast search", {
+        attempts,
+        quantity: finalBest.quantity.toString(),
+        mintCost: finalBest.mintCost.toString(),
+        redeemPayout: finalBest.redeemPayout.toString(),
+    });
+    return finalBest;
+}
+
 export async function previewTradeWithinBudgetServerOnly({
     client,
     sender,
@@ -998,7 +1102,8 @@ export async function calculateQuantityWithinBudget({
     let high = 1n;
     let best = { quantity: 0n, cost: 0n, askPrice: 0n };
     const simulateMint = async (quantity: bigint): Promise<MintEvent | null> => {
-        const depositAmount = budget > managerBalance ? budget - managerBalance : 0n;
+        const maxTotalCost = calcMaxTotalCost(budget, PREDICT_BINARY_CONFIG.feeBps);
+        const depositAmount = maxTotalCost > managerBalance ? maxTotalCost - managerBalance : 0n;
         const tx = createMintBinaryTransaction({
             sender,
             managerId,
@@ -1008,6 +1113,7 @@ export async function calculateQuantityWithinBudget({
             isUp,
             quantity,
             depositAmount,
+            maxTotalCost,
         });
         try {
             const simulated = await client.core.simulateTransaction({
@@ -1052,6 +1158,37 @@ export async function calculateQuantityWithinBudget({
         ...best,
         depositAmount: best.cost > managerBalance ? best.cost - managerBalance : 0n,
     };
+}
+
+/**
+ * Arena の players テーブルに playerAddress が登録済みかを PlayerJoined イベントで確認する。
+ * ネットワークエラー時は false を返す（保守的）。
+ */
+export async function checkArenaPlayerJoined(playerAddress: string): Promise<boolean> {
+    try {
+        const eventType = `${PREDICT_BINARY_CONFIG.deepArenaPackageId}::events::PlayerJoined`;
+        const { events } = await queryMoveEvents({ eventType, maxPages: 5, pageSize: 50 });
+        const normalizedPlayer = playerAddress.toLowerCase();
+        const arenaId = PREDICT_BINARY_CONFIG.arenaObjectId.toLowerCase();
+        for (const event of events) {
+            if (!isRecord(event) || !isRecord(event.parsedJson)) continue;
+            const payload = event.parsedJson;
+            const player = typeof payload.player === "string" ? payload.player.toLowerCase() : "";
+            // arena_id は "0x..." or { id: "0x..." } のどちらにもなりうる
+            let eventArenaId = "";
+            if (typeof payload.arena_id === "string") {
+                eventArenaId = payload.arena_id.toLowerCase();
+            } else if (isRecord(payload.arena_id) && typeof payload.arena_id.id === "string") {
+                eventArenaId = (payload.arena_id.id as string).toLowerCase();
+            }
+            if (player === normalizedPlayer && eventArenaId === arenaId) {
+                return true;
+            }
+        }
+        return false;
+    } catch {
+        return false;
+    }
 }
 
 export async function findPredictManager(owner: string): Promise<string | null> {

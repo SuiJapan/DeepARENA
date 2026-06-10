@@ -1371,7 +1371,7 @@ button:disabled {
 .binary-history-list article {
     grid-template-columns:
         minmax(92px, 0.9fr) minmax(70px, 0.7fr) minmax(64px, 0.6fr)
-        repeat(5, minmax(82px, 1fr));
+        repeat(6, minmax(82px, 1fr));
 }
 
 .binary-position-table article:last-child,
@@ -1454,6 +1454,21 @@ button:disabled {
     color: var(--muted);
     font-size: 9px;
     text-transform: uppercase;
+}
+
+.binary-history-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 12px 18px;
+    border-top: 1px solid var(--line);
+}
+
+.binary-history-pagination span {
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
 }
 
 .history-list article {
