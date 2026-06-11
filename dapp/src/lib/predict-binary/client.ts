@@ -459,6 +459,22 @@ function createTradePreviewDebugDetails({
 
 const loggedFirstPreviewExecutions = new Set<string>();
 const loggedReturnValueDecodes = new Set<string>();
+const MAX_LOGGED_PREVIEW_KEYS = 500;
+
+function addBoundedPreviewLogKey(keys: Set<string>, key: string): boolean {
+    if (keys.has(key)) {
+        return false;
+    }
+    keys.add(key);
+    while (keys.size > MAX_LOGGED_PREVIEW_KEYS) {
+        const oldestKey = keys.keys().next().value;
+        if (typeof oldestKey !== "string") {
+            break;
+        }
+        keys.delete(oldestKey);
+    }
+    return true;
+}
 
 function logFirstPreviewExecution({
     input,
@@ -486,10 +502,9 @@ function logFirstPreviewExecution({
         input.strike.toString(),
         budget.toString(),
     ].join(":");
-    if (loggedFirstPreviewExecutions.has(key)) {
+    if (!addBoundedPreviewLogKey(loggedFirstPreviewExecutions, key)) {
         return;
     }
-    loggedFirstPreviewExecutions.add(key);
     console.info("Binary odds preview execution", {
         side,
         functionName: "previewTradeWithinBudget",
@@ -537,10 +552,9 @@ function logTradeAmountDecode({
         input.strike.toString(),
         quantity.toString(),
     ].join(":");
-    if (loggedReturnValueDecodes.has(key)) {
+    if (!addBoundedPreviewLogKey(loggedReturnValueDecodes, key)) {
         return;
     }
-    loggedReturnValueDecodes.add(key);
     console.info("Binary odds preview return decode", {
         side,
         quantity: quantity.toString(),

@@ -8,6 +8,7 @@ import {
 } from "@/src/lib/predict-binary/client";
 import { formatBinaryOddsFromQuantity } from "@/src/lib/predict-binary/odds";
 import { buildBinaryPreviewCacheKey } from "@/src/lib/predict-binary/preview-key";
+import { getSharedPreviewCache } from "@/src/lib/server/preview-cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -66,8 +67,7 @@ interface PreviewResponse {
     down: SideResponse;
 }
 
-const CACHE_TTL_MS = 30_000;
-const previewCache = new Map<string, { expiresAt: number; response: PreviewResponse }>();
+const binaryPreviewCache = getSharedPreviewCache<PreviewResponse>("predict:binary-preview");
 
 const suiClient = new SuiJsonRpcClient({
     network: PREDICT_BINARY_CONFIG.network,
@@ -221,6 +221,32 @@ async function previewSide(body: PreviewRequest, side: PreviewSide): Promise<Sid
     }
 }
 
+async function buildPreviewResponse(body: PreviewRequest, previewKey: string): Promise<PreviewResponse> {
+    const [up, down] = await Promise.all([previewSide(body, "UP"), previewSide(body, "DOWN")]);
+    return { ok: true, previewKey, cacheHit: false, up, down };
+}
+
+function hasSuccessfulSide(response: PreviewResponse): boolean {
+    return response.up.ok || response.down.ok;
+}
+
+export function warmBinaryPreviewCache(input: {
+    walletAddress: string;
+    betAmountAtomic: string;
+    oracleId: string;
+    expiryMs: string;
+    referenceStrikeRaw: string;
+    oracleTimestampMs: string;
+    predictObjectId: string;
+    quoteCoinType: string;
+}): void {
+    const body = { ...input, cachePolicy: "read-through" as const };
+    const previewKey = buildPreviewKey(body);
+    binaryPreviewCache.warm(previewKey, () => buildPreviewResponse(body, previewKey), {
+        shouldCache: hasSuccessfulSide,
+    });
+}
+
 export async function POST(request: Request): Promise<NextResponse<PreviewResponse>> {
     try {
         const body = parseBody(await request.json());
@@ -236,25 +262,33 @@ export async function POST(request: Request): Promise<NextResponse<PreviewRespon
         }
 
         const previewKey = buildPreviewKey(body);
-        const cached = body.cachePolicy === "read-through" ? previewCache.get(previewKey) : null;
-        if (cached && cached.expiresAt > Date.now()) {
-            return NextResponse.json({ ...cached.response, cacheHit: true });
-        }
-
-        const [up, down] = await Promise.all([previewSide(body, "UP"), previewSide(body, "DOWN")]);
-        const response = { ok: true as const, previewKey, cacheHit: false, up, down };
-        if (up.ok || down.ok) {
-            previewCache.set(previewKey, { expiresAt: Date.now() + CACHE_TTL_MS, response });
+        const response =
+            body.cachePolicy === "read-through"
+                ? await binaryPreviewCache.getOrLoad(
+                      previewKey,
+                      () => buildPreviewResponse(body, previewKey),
+                      { shouldCache: hasSuccessfulSide },
+                  )
+                : {
+                      value: await buildPreviewResponse(body, previewKey),
+                      state: "miss" as const,
+                  };
+        const jsonResponse = {
+            ...response.value,
+            cacheHit: response.state === "fresh" || response.state === "stale",
+        };
+        if (response.state === "fresh" || response.state === "stale") {
+            return NextResponse.json(jsonResponse);
         }
         console.info("Binary preview API response", {
             previewKey,
-            upOk: up.ok,
-            downOk: down.ok,
-            upQuantity: up.ok ? up.quantity : null,
-            downQuantity: down.ok ? down.quantity : null,
-            cacheTtlMs: CACHE_TTL_MS,
+            upOk: jsonResponse.up.ok,
+            downOk: jsonResponse.down.ok,
+            upQuantity: jsonResponse.up.ok ? jsonResponse.up.quantity : null,
+            downQuantity: jsonResponse.down.ok ? jsonResponse.down.quantity : null,
+            cacheState: response.state,
         });
-        return NextResponse.json(response);
+        return NextResponse.json(jsonResponse);
     } catch (caught) {
         console.error("binary-preview route fatal error", caught);
         const previewKey = "invalid";
