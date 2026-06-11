@@ -7,6 +7,7 @@ import {
     type BudgetedTradePreview,
 } from "@/src/lib/predict-binary/client";
 import { formatBinaryOddsFromQuantity } from "@/src/lib/predict-binary/odds";
+import { buildBinaryPreviewCacheKey } from "@/src/lib/predict-binary/preview-key";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +23,7 @@ interface PreviewRequest {
     oracleTimestampMs: string;
     predictObjectId: string;
     quoteCoinType: string;
+    cachePolicy: PreviewCachePolicy;
 }
 
 interface SideSuccessResponse {
@@ -54,6 +56,7 @@ interface SideDebug {
 }
 
 type SideResponse = SideSuccessResponse | SideFailureResponse;
+type PreviewCachePolicy = "read-through" | "bypass";
 
 interface PreviewResponse {
     ok: true;
@@ -63,7 +66,7 @@ interface PreviewResponse {
     down: SideResponse;
 }
 
-const CACHE_TTL_MS = 4_000;
+const CACHE_TTL_MS = 30_000;
 const previewCache = new Map<string, { expiresAt: number; response: PreviewResponse }>();
 
 const suiClient = new SuiJsonRpcClient({
@@ -90,6 +93,16 @@ function readU64String(value: unknown, fieldName: string): string {
     return text;
 }
 
+function readCachePolicy(value: unknown): PreviewCachePolicy {
+    if (value === undefined || value === "read-through") {
+        return "read-through";
+    }
+    if (value === "bypass") {
+        return "bypass";
+    }
+    throw new Error("Invalid cachePolicy");
+}
+
 function parseBody(value: unknown): PreviewRequest {
     if (!isRecord(value)) {
         throw new Error("Invalid request body");
@@ -103,6 +116,7 @@ function parseBody(value: unknown): PreviewRequest {
         oracleTimestampMs: readU64String(value.oracleTimestampMs, "oracleTimestampMs"),
         predictObjectId: readString(value.predictObjectId, "predictObjectId"),
         quoteCoinType: readString(value.quoteCoinType, "quoteCoinType"),
+        cachePolicy: readCachePolicy(value.cachePolicy),
     };
     if (request.predictObjectId !== PREDICT_BINARY_CONFIG.predictObjectId) {
         throw new Error("Invalid predictObjectId");
@@ -175,13 +189,12 @@ function failureResponse(error: string, reason: string, caught?: unknown): SideF
 }
 
 function buildPreviewKey(body: PreviewRequest): string {
-    return [
-        body.oracleId,
-        body.expiryMs,
-        body.referenceStrikeRaw,
-        body.oracleTimestampMs,
-        body.betAmountAtomic,
-    ].join(":");
+    return buildBinaryPreviewCacheKey({
+        oracleId: body.oracleId,
+        expiryMs: body.expiryMs,
+        referenceStrikeRaw: body.referenceStrikeRaw,
+        betAmountAtomic: body.betAmountAtomic,
+    });
 }
 
 async function previewSide(body: PreviewRequest, side: PreviewSide): Promise<SideResponse> {
@@ -223,7 +236,7 @@ export async function POST(request: Request): Promise<NextResponse<PreviewRespon
         }
 
         const previewKey = buildPreviewKey(body);
-        const cached = previewCache.get(previewKey);
+        const cached = body.cachePolicy === "read-through" ? previewCache.get(previewKey) : null;
         if (cached && cached.expiresAt > Date.now()) {
             return NextResponse.json({ ...cached.response, cacheHit: true });
         }

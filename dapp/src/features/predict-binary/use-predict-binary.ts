@@ -31,6 +31,10 @@ import { PREDICT_BINARY_CONFIG, predictBinaryExplorerUrl } from "@/src/lib/predi
 import { readSuiEventPayloads } from "@/src/lib/predict-binary/events";
 import { formatBinaryOddsFromQuantity } from "@/src/lib/predict-binary/odds";
 import {
+    buildBinaryPreviewCacheKey,
+    buildBinaryPreviewRequestKey,
+} from "@/src/lib/predict-binary/preview-key";
+import {
     calcFee,
     calcMaxTotalCost,
     createJoinArenaTransaction,
@@ -279,6 +283,8 @@ interface BinaryPreviewApiResponse {
     down: BinaryPreviewSideResponse;
 }
 
+type PreviewCachePolicy = "read-through" | "bypass";
+
 interface ParsedBinaryPreviewSide {
     ok: boolean;
     preview: BudgetedTradePreview | null;
@@ -308,19 +314,16 @@ function previewFromApiSide(result: BinaryPreviewSideResponse): ParsedBinaryPrev
 function buildPreviewApiKey({
     market,
     budget,
-    oracleTimestampMs,
 }: {
     market: BtcBinaryMarket;
     budget: bigint;
-    oracleTimestampMs: number | null;
 }): string {
-    return [
-        market.oracleId,
-        market.expiryMs.toString(),
-        market.strike.toString(),
-        String(oracleTimestampMs ?? 0),
-        budget.toString(),
-    ].join(":");
+    return buildBinaryPreviewCacheKey({
+        oracleId: market.oracleId,
+        expiryMs: market.expiryMs,
+        referenceStrikeRaw: market.strike,
+        betAmountAtomic: budget,
+    });
 }
 
 function getBetAvailability({
@@ -355,7 +358,12 @@ function getBetAvailability({
     if (!hasPositiveAmount) {
         return { ...base, canBet: false, reason: "Enter an amount." };
     }
-    if (!state.preview || state.status === "ERROR" || state.status === "UNAVAILABLE") {
+    if (
+        !state.preview ||
+        !previewOk ||
+        state.status === "ERROR" ||
+        state.status === "UNAVAILABLE"
+    ) {
         return {
             ...base,
             canBet: false,
@@ -376,11 +384,13 @@ async function previewBinaryOddsViaApi({
     market,
     budget,
     oracleTimestampMs,
+    cachePolicy = "read-through",
 }: {
     address: string;
     market: BtcBinaryMarket;
     budget: bigint;
     oracleTimestampMs: number | null;
+    cachePolicy?: PreviewCachePolicy;
 }): Promise<{
     previewKey: string;
     cacheHit: boolean;
@@ -399,6 +409,7 @@ async function previewBinaryOddsViaApi({
             oracleTimestampMs: String(oracleTimestampMs ?? 0),
             predictObjectId: PREDICT_BINARY_CONFIG.predictObjectId,
             quoteCoinType: PREDICT_BINARY_CONFIG.quoteCoinType,
+            cachePolicy,
         }),
     });
     const payload = (await response.json()) as unknown;
@@ -441,6 +452,10 @@ export function usePredictBinary(
     const sidePositionRestoreRef = useRef(0);
     const loggedPreviewErrorsRef = useRef<Set<string>>(new Set());
     const previewKeyRef = useRef<string | null>(null);
+    const previewContextRef = useRef<{
+        oracleTimestampMs: number | null;
+        spotTimestampMs: number | null;
+    }>({ oracleTimestampMs: null, spotTimestampMs: null });
     const hasSuccessfulPreviewRef = useRef(false);
     const [amount, setAmount] = useState("10");
     const [txStatus, setTxStatus] = useState<BinaryTxStatus>("READY");
@@ -493,6 +508,10 @@ export function usePredictBinary(
     const isBusy = txStatus === "CONFIRM IN WALLET" || txStatus === "SUBMITTING";
     const isBettingOpen = roundMarket?.state === "BETTING_OPEN";
     const oracleTimestampMs = roundMarket?.currentOracle?.timestampMs ?? null;
+
+    useEffect(() => {
+        previewContextRef.current = { oracleTimestampMs, spotTimestampMs };
+    }, [oracleTimestampMs, spotTimestampMs]);
 
     const refresh = useCallback(async () => {
         if (!address || !isTestnet) {
@@ -592,20 +611,20 @@ export function usePredictBinary(
     }, [address, isTestnet, market, restoreSidePositions]);
 
     useEffect(() => {
-        previewRequestRef.current += 1;
-        const requestId = previewRequestRef.current;
         const resetPreviews = (status: BinaryPreviewStatus) => {
             setUpPreview({ status, preview: null, error: null, debug: null, previewKey: null });
             setDownPreview({ status, preview: null, error: null, debug: null, previewKey: null });
         };
 
         if (!address || !isTestnet || !isBettingOpen) {
+            previewRequestRef.current += 1;
             previewKeyRef.current = null;
             setPreviewStatus("IDLE");
             resetPreviews("IDLE");
             return;
         }
         if (!market) {
+            previewRequestRef.current += 1;
             previewKeyRef.current = null;
             setPreviewStatus("UNAVAILABLE");
             resetPreviews("UNAVAILABLE");
@@ -616,23 +635,25 @@ export function usePredictBinary(
         try {
             budget = parseTokenAmount(amount, PREDICT_BINARY_CONFIG.quoteDecimals).atomic;
         } catch {
+            previewRequestRef.current += 1;
             setPreviewStatus(amount.trim().length === 0 ? "IDLE" : "UNAVAILABLE");
             resetPreviews(amount.trim().length === 0 ? "IDLE" : "UNAVAILABLE");
             return;
         }
 
-        const previewKey = [
-            address,
-            market.oracleId,
-            market.expiryMs,
-            market.strike.toString(),
-            spotTimestampMs ?? "no-spot",
-            budget.toString(),
-        ].join(":");
+        const previewKey = buildBinaryPreviewRequestKey({
+            walletAddress: address,
+            oracleId: market.oracleId,
+            expiryMs: market.expiryMs,
+            referenceStrikeRaw: market.strike,
+            betAmountAtomic: budget,
+        });
         if (previewKeyRef.current === previewKey) {
             return;
         }
         previewKeyRef.current = previewKey;
+        previewRequestRef.current += 1;
+        const requestId = previewRequestRef.current;
 
         setPreviewStatus("PREVIEWING");
         setUpPreview((current) => ({ ...current, status: "PREVIEWING" }));
@@ -669,11 +690,12 @@ export function usePredictBinary(
                 };
                 let result: Awaited<ReturnType<typeof previewBinaryOddsViaApi>>;
                 try {
+                    const previewContext = previewContextRef.current;
                     result = await previewBinaryOddsViaApi({
                         address,
                         market,
                         budget,
-                        oracleTimestampMs,
+                        oracleTimestampMs: previewContext.oracleTimestampMs,
                     });
                 } catch (caught) {
                     if (previewRequestRef.current !== requestId) {
@@ -786,11 +808,12 @@ export function usePredictBinary(
                 const up = result.up.preview;
                 const down = result.down.preview;
                 if (up || down) {
+                    const previewContext = previewContextRef.current;
                     console.info("Binary odds preview", {
                         oracleId: market.oracleId,
                         expiry: market.expiryMs,
                         referenceStrikeRaw: market.strike.toString(),
-                        spotTimestampMs,
+                        spotTimestampMs: previewContext.spotTimestampMs,
                         betAmount: amount,
                         upFirstTriedQuantity: up?.firstTriedQuantity.toString() ?? null,
                         upQuantity: up?.quantity.toString() ?? null,
@@ -819,7 +842,7 @@ export function usePredictBinary(
         }, 750);
 
         return () => window.clearTimeout(timeoutId);
-    }, [address, amount, isBettingOpen, isTestnet, market, oracleTimestampMs, spotTimestampMs]);
+    }, [address, amount, isBettingOpen, isTestnet, market]);
 
     const placeBet = useCallback(
         async (direction: BinaryDirection) => {
@@ -848,7 +871,6 @@ export function usePredictBinary(
             const expectedPreviewKey = buildPreviewApiKey({
                 market: lockedMarket,
                 budget,
-                oracleTimestampMs,
             });
             const canTradeBase =
                 Boolean(address) && isTestnet && isBettingOpen && Boolean(lockedMarket) && !isBusy;
@@ -902,6 +924,7 @@ export function usePredictBinary(
                         market: lockedMarket,
                         budget,
                         oracleTimestampMs,
+                        cachePolicy: "bypass",
                     });
                 } catch (caught) {
                     const error = readErrorMessage(caught);
@@ -1387,7 +1410,6 @@ export function usePredictBinary(
                 currentBetPreviewKey = buildPreviewApiKey({
                     market,
                     budget,
-                    oracleTimestampMs,
                 });
             }
         } catch {
@@ -1497,7 +1519,6 @@ export function usePredictBinary(
         lastRedeem,
         market,
         message,
-        oracleTimestampMs,
         placeBet,
         position,
         previewStatus,
