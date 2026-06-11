@@ -140,7 +140,7 @@ export async function POST(
         let cursor: string | null | undefined;
 
         for (let page = 0; page < MAX_PAGES; page += 1) {
-            const result = await suiClient.core.queryTransactionBlocks({
+            const result = await suiClient.queryTransactionBlocks({
                 filter: { FromAddress: walletAddress },
                 options: { showEvents: true, showBalanceChanges: true },
                 order: "descending",
