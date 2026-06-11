@@ -13,6 +13,7 @@ import {
 } from "@/src/lib/predict-binary/client";
 import { PREDICT_BINARY_CONFIG } from "@/src/lib/predict-binary/config";
 import {
+    hasWalletDusdcPositiveBalanceChange,
     isCacheEntryFresh,
     positionKeyFromRedeemed,
     type SerializedMintedPositionEvent,
@@ -33,6 +34,7 @@ interface PortfolioResponse {
     redeemed: SerializedRedeemedPositionEvent[];
     claimedKeys: string[];
     cacheHit: boolean;
+    reachedPageLimit: boolean;
 }
 
 interface ErrorResponse {
@@ -40,7 +42,7 @@ interface ErrorResponse {
     error: string;
 }
 
-const MAX_PAGES = 4;
+const MAX_PAGES = 8;
 const PAGE_SIZE = 50;
 const CACHE_TTL_MS = 30_000;
 const CACHE_MAX_SIZE = 200;
@@ -67,40 +69,6 @@ function isEventType(event: unknown, type: string): boolean {
     return event.eventType === type || event.type === type;
 }
 
-function hasDusdcPositiveBalanceChange(tx: unknown): boolean {
-    if (!isRecord(tx)) {
-        return false;
-    }
-    const balanceChanges = tx.balanceChanges;
-    if (!Array.isArray(balanceChanges)) {
-        return false;
-    }
-    const dusdcCoinType = PREDICT_BINARY_CONFIG.quoteCoinType.toLowerCase();
-    for (const change of balanceChanges) {
-        if (!isRecord(change)) {
-            continue;
-        }
-        const coinType = typeof change.coinType === "string" ? change.coinType.toLowerCase() : "";
-        if (coinType !== dusdcCoinType) {
-            continue;
-        }
-        const amount =
-            typeof change.amount === "string"
-                ? change.amount
-                : typeof change.amount === "number"
-                  ? String(change.amount)
-                  : null;
-        if (amount === null) {
-            continue;
-        }
-        // Positive amount means coins were received (claimed payout)
-        const parsed = BigInt(amount);
-        if (parsed > 0n) {
-            return true;
-        }
-    }
-    return false;
-}
 
 export async function POST(
     request: Request,
@@ -136,6 +104,7 @@ export async function POST(
         const rangeMinted: RangeMintEvent[] = [];
         const redeemed: RedeemedPositionEvent[] = [];
         const claimedKeys: string[] = [];
+        let reachedPageLimit = false;
 
         let cursor: string | null | undefined;
 
@@ -173,7 +142,14 @@ export async function POST(
                             // skip malformed events
                         }
 
-                        if (redeemedEvent !== null && hasDusdcPositiveBalanceChange(tx)) {
+                        if (
+                            redeemedEvent !== null &&
+                            hasWalletDusdcPositiveBalanceChange(
+                                tx,
+                                walletAddress,
+                                PREDICT_BINARY_CONFIG.quoteCoinType,
+                            )
+                        ) {
                             const key = positionKeyFromRedeemed({
                                 oracleId: redeemedEvent.oracleId,
                                 expiryMs: redeemedEvent.expiryMs,
@@ -191,6 +167,10 @@ export async function POST(
             if (!result.hasNextPage || result.nextCursor == null) {
                 break;
             }
+            if (page === MAX_PAGES - 1) {
+                reachedPageLimit = true;
+                break;
+            }
             cursor = result.nextCursor;
         }
 
@@ -201,6 +181,7 @@ export async function POST(
             redeemed: redeemed.map(serializeRedeemedEvent),
             claimedKeys,
             cacheHit: false,
+            reachedPageLimit,
         };
 
         if (portfolioCache.size >= CACHE_MAX_SIZE) {

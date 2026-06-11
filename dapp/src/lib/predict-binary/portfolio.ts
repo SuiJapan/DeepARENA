@@ -175,3 +175,39 @@ export function positionKeyFromRedeemed({
 export function isCacheEntryFresh(entry: { expiresAt: number }, nowMs: number): boolean {
     return entry.expiresAt > nowMs;
 }
+
+function readOwnerAddress(value: unknown): string | null {
+    if (typeof value === "object" && value !== null && "AddressOwner" in value) {
+        const addressOwner = (value as Record<string, unknown>).AddressOwner;
+        return typeof addressOwner === "string" ? addressOwner : null;
+    }
+    return null;
+}
+
+/**
+ * トランザクションの balanceChanges に、指定ウォレットアドレス宛の
+ * 正の quoteCoinType 残高変化が含まれるかを検証する。
+ * owner 検証を含むため、manager や別アドレス宛の変化は無視される。
+ */
+export function hasWalletDusdcPositiveBalanceChange(
+    tx: unknown,
+    walletAddress: string,
+    quoteCoinType: string,
+): boolean {
+    if (typeof tx !== "object" || tx === null) return false;
+    const balanceChanges = (tx as Record<string, unknown>).balanceChanges;
+    if (!Array.isArray(balanceChanges)) return false;
+    return balanceChanges.some((change) => {
+        if (typeof change !== "object" || change === null) return false;
+        const c = change as Record<string, unknown>;
+        const owner = readOwnerAddress(c.owner);
+        const coinType = typeof c.coinType === "string" ? c.coinType : null;
+        const amount = typeof c.amount === "string" ? c.amount : null;
+        if (amount === null) return false;
+        return (
+            owner?.toLowerCase() === walletAddress.toLowerCase() &&
+            coinType === quoteCoinType &&
+            BigInt(amount) > 0n
+        );
+    });
+}

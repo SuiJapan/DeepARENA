@@ -608,8 +608,8 @@ export function BinaryPortfolioSection({
                 mintedPagesRead: 0,
                 rangePagesRead: 0,
                 redeemedPagesRead: 0,
-                mintedReachedLimit: false,
-                rangeReachedLimit: false,
+                mintedReachedLimit: payload.reachedPageLimit ?? false,
+                rangeReachedLimit: payload.reachedPageLimit ?? false,
                 redeemedReachedLimit: false,
             });
             setHistoryPage(1);

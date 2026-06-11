@@ -5,6 +5,7 @@ import {
     deserializeMintedEvent,
     deserializeRangeMintedEvent,
     deserializeRedeemedEvent,
+    hasWalletDusdcPositiveBalanceChange,
     isCacheEntryFresh,
     positionKeyFromRedeemed,
     type SerializedMintedPositionEvent,
@@ -199,4 +200,44 @@ test("isCacheEntryFresh returns true within 30 second TTL window", () => {
     assert.equal(isCacheEntryFresh(entry, createdAt + ttlMs), false);
     // 1ms after expiry — should NOT be fresh
     assert.equal(isCacheEntryFresh(entry, createdAt + ttlMs + 1), false);
+});
+
+const QUOTE_COIN_TYPE = "0x123::dusdc::DUSDC";
+const WALLET = "0xWALLET";
+
+function makeTx(overrides: { owner?: unknown; coinType?: string; amount?: string }) {
+    return {
+        balanceChanges: [
+            {
+                owner: { AddressOwner: overrides.owner ?? WALLET },
+                coinType: overrides.coinType ?? QUOTE_COIN_TYPE,
+                amount: overrides.amount ?? "1000000",
+            },
+        ],
+    };
+}
+
+test("hasWalletDusdcPositiveBalanceChange returns true when owner and coinType match and amount is positive", () => {
+    const tx = makeTx({});
+    assert.equal(hasWalletDusdcPositiveBalanceChange(tx, WALLET, QUOTE_COIN_TYPE), true);
+});
+
+test("hasWalletDusdcPositiveBalanceChange returns false when owner is a different address", () => {
+    const tx = makeTx({ owner: "0xOTHER" });
+    assert.equal(hasWalletDusdcPositiveBalanceChange(tx, WALLET, QUOTE_COIN_TYPE), false);
+});
+
+test("hasWalletDusdcPositiveBalanceChange returns false when coinType does not match", () => {
+    const tx = makeTx({ coinType: "0x999::other::TOKEN" });
+    assert.equal(hasWalletDusdcPositiveBalanceChange(tx, WALLET, QUOTE_COIN_TYPE), false);
+});
+
+test("hasWalletDusdcPositiveBalanceChange returns false when amount is zero", () => {
+    const tx = makeTx({ amount: "0" });
+    assert.equal(hasWalletDusdcPositiveBalanceChange(tx, WALLET, QUOTE_COIN_TYPE), false);
+});
+
+test("hasWalletDusdcPositiveBalanceChange returns false when balanceChanges is empty", () => {
+    const tx = { balanceChanges: [] };
+    assert.equal(hasWalletDusdcPositiveBalanceChange(tx, WALLET, QUOTE_COIN_TYPE), false);
 });
