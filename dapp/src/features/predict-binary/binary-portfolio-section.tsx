@@ -6,9 +6,6 @@ import type { PredictRoundMarket } from "@/src/features/predict-round/use-predic
 import { formatTokenAmount } from "@/src/lib/plp-sandbox/amounts";
 import {
     type MintedPositionEvent,
-    queryManagerPositionRedeemedEvents,
-    queryWalletPositionMintedEvents,
-    queryWalletRangeMintedEvents,
     type RangeMintEvent,
     type RedeemedPositionEvent,
     readDigest,
@@ -16,6 +13,11 @@ import {
 } from "@/src/lib/predict-binary/client";
 import { PREDICT_BINARY_CONFIG, predictBinaryExplorerUrl } from "@/src/lib/predict-binary/config";
 import { formatBinaryOddsFromQuantity } from "@/src/lib/predict-binary/odds";
+import {
+    deserializeMintedEvent,
+    deserializeRangeMintedEvent,
+    deserializeRedeemedEvent,
+} from "@/src/lib/predict-binary/portfolio";
 import {
     createClaimBinaryPayoutTransaction,
     describeClaimBinaryPayoutMoveCalls,
@@ -99,7 +101,6 @@ interface DisplayHistoryItem {
 }
 
 const MINTED_EVENT_MAX_PAGES = 40;
-const REDEEMED_EVENT_MAX_PAGES = 40;
 const EVENT_PAGE_SIZE = 50;
 const HISTORY_PAGE_SIZE = 50;
 
@@ -505,13 +506,6 @@ function hasPositiveWalletDusdcBalanceChange(
     });
 }
 
-function readResultBalanceChanges(payload: unknown): unknown {
-    if (!isRecord(payload) || !isRecord(payload.result)) {
-        return null;
-    }
-    return payload.result.balanceChanges ?? null;
-}
-
 async function fetchOracleSettlements(
     oracleIds: string[],
 ): Promise<Record<string, OracleSettlementState>> {
@@ -563,33 +557,6 @@ function isSuccessfulTransactionResult(value: unknown): boolean {
     return status === "success";
 }
 
-async function fetchHasWalletDusdcClaim(digest: string, walletAddress: string): Promise<boolean> {
-    const response = await fetch(PREDICT_BINARY_CONFIG.fullnodeJsonRpcUrl, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-            jsonrpc: "2.0",
-            id: digest,
-            method: "sui_getTransactionBlock",
-            params: [
-                digest,
-                {
-                    showBalanceChanges: true,
-                    showEffects: true,
-                },
-            ],
-        }),
-    });
-    if (!response.ok) {
-        return false;
-    }
-    const payload = await response.json();
-    return (
-        isSuccessfulTransactionResult(isRecord(payload) ? payload.result : null) &&
-        hasPositiveWalletDusdcBalanceChange(readResultBalanceChanges(payload), walletAddress)
-    );
-}
-
 export function BinaryPortfolioSection({
     roundMarket,
 }: {
@@ -617,61 +584,47 @@ export function BinaryPortfolioSection({
         setIsLoading(true);
         setError(null);
         try {
-            const mintedResult = await queryWalletPositionMintedEvents({
-                trader: address,
-                predictId: PREDICT_BINARY_CONFIG.predictObjectId,
-                quoteCoinType: PREDICT_BINARY_CONFIG.quoteCoinType,
-                maxPages: MINTED_EVENT_MAX_PAGES,
-                pageSize: EVENT_PAGE_SIZE,
+            // Stage 1: 新 API を呼ぶ
+            const response = await fetch("/api/predict/portfolio", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ walletAddress: address }),
             });
-            const rangeMintedResult = await queryWalletRangeMintedEvents({
-                trader: address,
-                predictId: PREDICT_BINARY_CONFIG.predictObjectId,
-                quoteCoinType: PREDICT_BINARY_CONFIG.quoteCoinType,
-                maxPages: MINTED_EVENT_MAX_PAGES,
-                pageSize: EVENT_PAGE_SIZE,
-            });
-            const oracleSettlements = await fetchOracleSettlements([
-                ...mintedResult.events.map((event) => event.oracleId),
-                ...rangeMintedResult.events.map((event) => event.oracleId),
-            ]);
-            const managerIds = [...new Set(mintedResult.events.map((event) => event.managerId))];
-            const redeemedResults = await Promise.all(
-                managerIds.map((managerId) =>
-                    queryManagerPositionRedeemedEvents({
-                        managerId,
-                        maxPages: REDEEMED_EVENT_MAX_PAGES,
-                        pageSize: EVENT_PAGE_SIZE,
-                    }),
-                ),
-            );
-            const redeemed = redeemedResults.flatMap((result) => result.events);
-            const claimedChecks = await Promise.all(
-                redeemed.map(async (event) => {
-                    if (!event.digest) {
-                        return null;
-                    }
-                    const hasWalletClaim = await fetchHasWalletDusdcClaim(event.digest, address);
-                    return hasWalletClaim ? positionKey(event) : null;
-                }),
-            );
+            const payload = await response.json();
+            if (!payload.ok) throw new Error(payload.error ?? "Portfolio fetch failed");
+
+            const minted = payload.minted.map(deserializeMintedEvent);
+            const rangeMinted = payload.rangeMinted.map(deserializeRangeMintedEvent);
+            const redeemed = payload.redeemed.map(deserializeRedeemedEvent);
+            const claimedKeys: string[] = payload.claimedKeys;
+
+            // 即描画（settlements はまだ空）
             setState({
-                minted: mintedResult.events,
-                rangeMinted: rangeMintedResult.events,
+                minted,
+                rangeMinted,
                 redeemed,
-                claimedKeys: claimedChecks.filter((key) => key !== null),
-                oracleSettlements,
-                mintedPagesRead: mintedResult.pagesRead,
-                rangePagesRead: rangeMintedResult.pagesRead,
-                redeemedPagesRead: redeemedResults.reduce(
-                    (total, result) => total + result.pagesRead,
-                    0,
-                ),
-                mintedReachedLimit: mintedResult.reachedLimit,
-                rangeReachedLimit: rangeMintedResult.reachedLimit,
-                redeemedReachedLimit: redeemedResults.some((result) => result.reachedLimit),
+                claimedKeys,
+                oracleSettlements: {},
+                mintedPagesRead: 0,
+                rangePagesRead: 0,
+                redeemedPagesRead: 0,
+                mintedReachedLimit: false,
+                rangeReachedLimit: false,
+                redeemedReachedLimit: false,
             });
             setHistoryPage(1);
+
+            // Stage 2: oracle settlements を後追い取得
+            const oracleIds = [
+                ...new Set([
+                    ...minted.map((e: MintedPositionEvent) => e.oracleId),
+                    ...rangeMinted.map((e: RangeMintEvent) => e.oracleId),
+                ]),
+            ];
+            if (oracleIds.length > 0) {
+                const oracleSettlements = await fetchOracleSettlements(oracleIds);
+                setState((prev) => (prev ? { ...prev, oracleSettlements } : prev));
+            }
         } catch (caught) {
             setError(caught instanceof Error ? caught.message : String(caught));
         } finally {
