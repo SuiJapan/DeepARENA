@@ -167,3 +167,11 @@ export function positionKeyFromRedeemed({
 }): string {
     return [oracleId, expiryMs.toString(), strike.toString(), isUp ? "UP" : "DOWN"].join(":");
 }
+
+/**
+ * キャッシュエントリが有効期限内かどうかを判定する純関数。
+ * expiresAt が nowMs より大きければ有効（フレッシュ）と判断する。
+ */
+export function isCacheEntryFresh(entry: { expiresAt: number }, nowMs: number): boolean {
+    return entry.expiresAt > nowMs;
+}

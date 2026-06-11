@@ -5,6 +5,7 @@ import {
     deserializeMintedEvent,
     deserializeRangeMintedEvent,
     deserializeRedeemedEvent,
+    isCacheEntryFresh,
     positionKeyFromRedeemed,
     type SerializedMintedPositionEvent,
     serializeMintedEvent,
@@ -168,4 +169,34 @@ test("positionKeyFromRedeemed returns oracleId:expiryMs:strike:DOWN for isUp=fal
     });
 
     assert.equal(key, "0xoracle:1700000000000:50000000000000000:DOWN");
+});
+
+test("isCacheEntryFresh returns true when expiresAt is in the future", () => {
+    const nowMs = 1000000;
+    const entry = { expiresAt: nowMs + 1000 };
+    assert.equal(isCacheEntryFresh(entry, nowMs), true);
+});
+
+test("isCacheEntryFresh returns false when expiresAt equals nowMs", () => {
+    const nowMs = 1000000;
+    const entry = { expiresAt: nowMs };
+    assert.equal(isCacheEntryFresh(entry, nowMs), false);
+});
+
+test("isCacheEntryFresh returns false when expiresAt is in the past", () => {
+    const nowMs = 1000000;
+    const entry = { expiresAt: nowMs - 1 };
+    assert.equal(isCacheEntryFresh(entry, nowMs), false);
+});
+
+test("isCacheEntryFresh returns true within 30 second TTL window", () => {
+    const createdAt = 2000000000;
+    const ttlMs = 30_000;
+    const entry = { expiresAt: createdAt + ttlMs };
+    // 1ms before expiry — should be fresh
+    assert.equal(isCacheEntryFresh(entry, createdAt + ttlMs - 1), true);
+    // exactly at expiry — should NOT be fresh
+    assert.equal(isCacheEntryFresh(entry, createdAt + ttlMs), false);
+    // 1ms after expiry — should NOT be fresh
+    assert.equal(isCacheEntryFresh(entry, createdAt + ttlMs + 1), false);
 });
