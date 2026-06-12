@@ -1,30 +1,68 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import {
-    queryWalletPositionMintedEvents,
-    queryWalletRangeMintedEvents,
-    queryManagerPositionRedeemedEvents,
+    readPositionMintedEvent,
+    readRangeMintedEvent,
+    readPositionRedeemedEvent,
     readManagerBalance,
     type MintedPositionEvent,
     type RangeMintEvent,
     type RedeemedPositionEvent,
+    POSITION_MINTED_EVENT_TYPE,
+    RANGE_MINTED_EVENT_TYPE,
+    POSITION_REDEEMED_EVENT_TYPE,
 } from "@/src/lib/predict-binary/client";
 import { PREDICT_BINARY_CONFIG } from "@/src/lib/predict-binary/config";
+import { mapWithConcurrency } from "@/src/lib/utils/concurrent";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const MINTED_EVENT_MAX_PAGES = 40;
-const REDEEMED_EVENT_MAX_PAGES = 40;
-const EVENT_PAGE_SIZE = 50;
-const CLAIM_CHECK_CONCURRENCY = 5;
+const TX_PAGES_MAX = 4;
+const TX_PAGE_SIZE = 50;
+const MANAGER_BALANCE_CONCURRENCY = 5;
+
+const CACHE_TTL_MS = 30_000;
+const CACHE_MAX_ENTRIES = 200;
 
 const suiClient = new SuiJsonRpcClient({
     network: PREDICT_BINARY_CONFIG.network,
     url: PREDICT_BINARY_CONFIG.fullnodeJsonRpcUrl,
 });
 
-// --- BigInt serialization helpers ---
+// --- TTL cache ---
+
+interface CacheEntry<T> {
+    value: T;
+    expiresAt: number;
+}
+
+class TtlCache<T> {
+    private readonly entries = new Map<string, CacheEntry<T>>();
+
+    get(key: string): T | null {
+        const entry = this.entries.get(key);
+        if (!entry || Date.now() > entry.expiresAt) {
+            this.entries.delete(key);
+            return null;
+        }
+        return entry.value;
+    }
+
+    set(key: string, value: T): void {
+        if (this.entries.size >= CACHE_MAX_ENTRIES) {
+            const firstKey = this.entries.keys().next().value;
+            if (firstKey !== undefined) {
+                this.entries.delete(firstKey);
+            }
+        }
+        this.entries.set(key, { value, expiresAt: Date.now() + CACHE_TTL_MS });
+    }
+}
+
+const portfolioCache = new TtlCache<PortfolioData>();
+
+// --- BigInt serialization ---
 
 type Serialized<T> = T extends bigint
     ? string
@@ -51,19 +89,19 @@ function serializeBigInts<T>(value: T): Serialized<T> {
     return value as Serialized<T>;
 }
 
-// --- Claim check helpers ---
+// --- Helpers ---
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function normalizeTypeName(value: string): string {
+    return value.toLowerCase().replace(/^0x/, "");
+}
+
 function readOwnerAddress(value: unknown): string | null {
-    if (typeof value === "string") {
-        return value;
-    }
-    if (!isRecord(value)) {
-        return null;
-    }
+    if (typeof value === "string") return value;
+    if (!isRecord(value)) return null;
     const addressOwner = value.AddressOwner;
     return typeof addressOwner === "string" ? addressOwner : null;
 }
@@ -72,13 +110,9 @@ function hasPositiveWalletDusdcBalanceChange(
     balanceChanges: unknown,
     walletAddress: string,
 ): boolean {
-    if (!Array.isArray(balanceChanges)) {
-        return false;
-    }
+    if (!Array.isArray(balanceChanges)) return false;
     return balanceChanges.some((change) => {
-        if (!isRecord(change)) {
-            return false;
-        }
+        if (!isRecord(change)) return false;
         const owner = readOwnerAddress(change.owner);
         const coinType = typeof change.coinType === "string" ? change.coinType : null;
         const amount = typeof change.amount === "string" ? change.amount : null;
@@ -91,160 +125,251 @@ function hasPositiveWalletDusdcBalanceChange(
     });
 }
 
-function isSuccessfulTransactionResult(value: unknown): boolean {
-    if (!isRecord(value)) {
-        return false;
-    }
-    const directEffects = isRecord(value.effects) ? value.effects : null;
-    const transaction = isRecord(value.Transaction) ? value.Transaction : null;
-    const transactionEffects =
-        transaction && isRecord(transaction.effects) ? transaction.effects : null;
-    const status =
-        (isRecord(transactionEffects?.status) ? transactionEffects.status.status : null) ??
-        (isRecord(directEffects?.status) ? directEffects.status.status : null);
+function isTxSuccess(block: unknown): boolean {
+    if (!isRecord(block)) return false;
+    const effects = isRecord(block.effects) ? block.effects : null;
+    const status = effects && isRecord(effects.status) ? effects.status.status : null;
     return status === "success";
 }
 
-async function checkHasWalletDusdcClaim(
-    digest: string,
-    walletAddress: string,
-): Promise<boolean> {
-    try {
+function readTxTimestampMs(block: unknown): number | null {
+    if (!isRecord(block)) return null;
+    const value = block.timestampMs;
+    if (typeof value === "number" && Number.isSafeInteger(value)) return value;
+    if (typeof value === "string" && /^(0|[1-9]\d*)$/.test(value)) return Number(value);
+    return null;
+}
+
+// --- TX block fetching ---
+
+interface PortfolioData {
+    minted: MintedPositionEvent[];
+    rangeMinted: RangeMintEvent[];
+    redeemed: RedeemedPositionEvent[];
+    claimedKeys: string[];
+    managerBalances: Record<string, string>;
+    pagesInfo: {
+        mintedPagesRead: number;
+        mintedReachedLimit: boolean;
+        rangePagesRead: number;
+        rangeReachedLimit: boolean;
+        redeemedPagesRead: number;
+        redeemedReachedLimit: boolean;
+    };
+}
+
+async function fetchTxBlocks(walletAddress: string): Promise<{
+    blocks: unknown[];
+    pagesRead: number;
+    reachedLimit: boolean;
+}> {
+    let cursor: unknown = null;
+    const allBlocks: unknown[] = [];
+
+    for (let page = 0; page < TX_PAGES_MAX; page++) {
         const response = await fetch(PREDICT_BINARY_CONFIG.fullnodeJsonRpcUrl, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
                 jsonrpc: "2.0",
-                id: digest,
-                method: "sui_getTransactionBlock",
-                params: [digest, { showBalanceChanges: true, showEffects: true }],
+                id: page + 1,
+                method: "suix_queryTransactionBlocks",
+                params: [
+                    {
+                        filter: { FromAddress: walletAddress },
+                        options: {
+                            showEvents: true,
+                            showBalanceChanges: true,
+                            showEffects: true,
+                        },
+                    },
+                    cursor,
+                    TX_PAGE_SIZE,
+                    true,
+                ],
             }),
         });
         if (!response.ok) {
-            return false;
+            throw new Error(`suix_queryTransactionBlocks failed: ${response.status}`);
         }
-        const payload = await response.json();
-        const result = isRecord(payload) ? payload.result : null;
-        const balanceChanges = isRecord(payload) && isRecord(payload.result)
-            ? payload.result.balanceChanges ?? null
-            : null;
-        return (
-            isSuccessfulTransactionResult(result) &&
-            hasPositiveWalletDusdcBalanceChange(balanceChanges, walletAddress)
-        );
-    } catch {
-        return false;
+        const payload = (await response.json()) as unknown;
+        if (
+            !isRecord(payload) ||
+            !isRecord(payload.result) ||
+            !Array.isArray(payload.result.data)
+        ) {
+            throw new Error("Invalid suix_queryTransactionBlocks response");
+        }
+        allBlocks.push(...payload.result.data);
+        if (payload.result.hasNextPage !== true) {
+            return { blocks: allBlocks, pagesRead: page + 1, reachedLimit: false };
+        }
+        cursor = payload.result.nextCursor;
     }
+    return { blocks: allBlocks, pagesRead: TX_PAGES_MAX, reachedLimit: true };
 }
 
-async function mapWithConcurrency<T, R>(
-    items: readonly T[],
-    concurrency: number,
-    task: (item: T) => Promise<R>,
-): Promise<R[]> {
-    const results = new Array<R>(items.length);
-    let nextIndex = 0;
-    await Promise.all(
-        Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-            while (nextIndex < items.length) {
-                const index = nextIndex;
-                nextIndex += 1;
-                results[index] = await task(items[index] as T);
+function parseTxBlocksToPortfolio(
+    blocks: unknown[],
+    walletAddress: string,
+): {
+    minted: MintedPositionEvent[];
+    rangeMinted: RangeMintEvent[];
+    redeemed: RedeemedPositionEvent[];
+    claimedKeys: string[];
+} {
+    const minted: MintedPositionEvent[] = [];
+    const rangeMinted: RangeMintEvent[] = [];
+    const redeemed: RedeemedPositionEvent[] = [];
+    const claimedKeys: string[] = [];
+
+    for (const block of blocks) {
+        if (!isRecord(block) || !isTxSuccess(block)) continue;
+
+        const events = Array.isArray(block.events) ? block.events : [];
+        const digest = typeof block.digest === "string" ? block.digest : null;
+        const timestampMs = readTxTimestampMs(block);
+        const hasDusdcPayout = hasPositiveWalletDusdcBalanceChange(block.balanceChanges, walletAddress);
+
+        for (const event of events) {
+            if (!isRecord(event)) continue;
+            const eventType = typeof event.type === "string" ? event.type : null;
+            // Augment with TX-level digest and timestampMs for readEventDigest/readEventTimestampMs fallbacks
+            const augmented = { ...event, digest, timestampMs };
+
+            if (eventType === POSITION_MINTED_EVENT_TYPE) {
+                try {
+                    const e = readPositionMintedEvent(augmented);
+                    if (
+                        e.trader.toLowerCase() === walletAddress.toLowerCase() &&
+                        e.predictId === PREDICT_BINARY_CONFIG.predictObjectId &&
+                        normalizeTypeName(e.quoteAssetName) ===
+                            normalizeTypeName(PREDICT_BINARY_CONFIG.quoteCoinType) &&
+                        e.cost > 0n &&
+                        e.quantity > 0n
+                    ) {
+                        minted.push(e);
+                    }
+                } catch {
+                    // skip malformed event
+                }
+            } else if (eventType === RANGE_MINTED_EVENT_TYPE) {
+                try {
+                    const e = readRangeMintedEvent([augmented]);
+                    if (
+                        e.trader.toLowerCase() === walletAddress.toLowerCase() &&
+                        e.predictId === PREDICT_BINARY_CONFIG.predictObjectId &&
+                        normalizeTypeName(e.quoteAssetName) ===
+                            normalizeTypeName(PREDICT_BINARY_CONFIG.quoteCoinType) &&
+                        e.cost > 0n &&
+                        e.quantity > 0n
+                    ) {
+                        rangeMinted.push(e);
+                    }
+                } catch {
+                    // skip malformed event
+                }
+            } else if (eventType === POSITION_REDEEMED_EVENT_TYPE) {
+                try {
+                    const e = readPositionRedeemedEvent(augmented);
+                    redeemed.push(e);
+                    // Claim: user's own TX redeemed a position and received DUSDC payout
+                    if (hasDusdcPayout) {
+                        claimedKeys.push(
+                            [
+                                e.oracleId,
+                                e.expiryMs.toString(),
+                                e.strike.toString(),
+                                e.isUp ? "UP" : "DOWN",
+                            ].join(":"),
+                        );
+                    }
+                } catch {
+                    // skip malformed event
+                }
             }
-        }),
+        }
+    }
+
+    return { minted, rangeMinted, redeemed, claimedKeys };
+}
+
+async function buildPortfolioData(walletAddress: string): Promise<PortfolioData> {
+    const { blocks, pagesRead, reachedLimit } = await fetchTxBlocks(walletAddress);
+    const { minted, rangeMinted, redeemed, claimedKeys } = parseTxBlocksToPortfolio(
+        blocks,
+        walletAddress,
     );
-    return results;
+
+    const managerIds = [...new Set(minted.map((e) => e.managerId))];
+    const managerBalanceEntries = await mapWithConcurrency(
+        managerIds,
+        MANAGER_BALANCE_CONCURRENCY,
+        async (managerId) => {
+            try {
+                const balance = await readManagerBalance(suiClient, walletAddress, managerId);
+                return [managerId, balance.toString()] as const;
+            } catch {
+                return null;
+            }
+        },
+    );
+    const managerBalances = Object.fromEntries(
+        managerBalanceEntries.filter((e): e is [string, string] => e !== null),
+    );
+
+    return {
+        minted,
+        rangeMinted,
+        redeemed,
+        claimedKeys,
+        managerBalances,
+        pagesInfo: {
+            mintedPagesRead: pagesRead,
+            mintedReachedLimit: reachedLimit,
+            rangePagesRead: pagesRead,
+            rangeReachedLimit: reachedLimit,
+            redeemedPagesRead: pagesRead,
+            redeemedReachedLimit: reachedLimit,
+        },
+    };
+}
+
+// --- Request parsing ---
+
+function parseBody(value: unknown): { walletAddress: string } {
+    if (!isRecord(value)) throw new Error("Invalid request body");
+    const { walletAddress } = value;
+    if (
+        typeof walletAddress !== "string" ||
+        !/^0x[0-9a-fA-F]{1,64}$/.test(walletAddress)
+    ) {
+        throw new Error("Invalid walletAddress");
+    }
+    return { walletAddress };
 }
 
 // --- Route handler ---
 
-export async function GET(request: NextRequest): Promise<NextResponse> {
-    const wallet = request.nextUrl.searchParams.get("wallet");
-    if (!wallet || !/^0x[0-9a-fA-F]{1,64}$/.test(wallet)) {
-        return NextResponse.json(
-            { error: "wallet parameter is required and must be a valid Sui address" },
-            { status: 400 },
-        );
-    }
+export async function POST(request: NextRequest): Promise<NextResponse> {
+    const isFresh = request.nextUrl.searchParams.get("fresh") === "1";
 
     try {
-        const [mintedResult, rangeMintedResult] = await Promise.all([
-            queryWalletPositionMintedEvents({
-                trader: wallet,
-                predictId: PREDICT_BINARY_CONFIG.predictObjectId,
-                quoteCoinType: PREDICT_BINARY_CONFIG.quoteCoinType,
-                maxPages: MINTED_EVENT_MAX_PAGES,
-                pageSize: EVENT_PAGE_SIZE,
-            }),
-            queryWalletRangeMintedEvents({
-                trader: wallet,
-                predictId: PREDICT_BINARY_CONFIG.predictObjectId,
-                quoteCoinType: PREDICT_BINARY_CONFIG.quoteCoinType,
-                maxPages: MINTED_EVENT_MAX_PAGES,
-                pageSize: EVENT_PAGE_SIZE,
-            }),
-        ]);
+        const { walletAddress } = parseBody(await request.json());
 
-        const managerIds = [...new Set(mintedResult.events.map((e) => e.managerId))];
+        if (!isFresh) {
+            const cached = portfolioCache.get(walletAddress);
+            if (cached) {
+                return NextResponse.json(serializeBigInts(cached));
+            }
+        }
 
-        const redeemedResults = await Promise.all(
-            managerIds.map((managerId) =>
-                queryManagerPositionRedeemedEvents({
-                    managerId,
-                    maxPages: REDEEMED_EVENT_MAX_PAGES,
-                    pageSize: EVENT_PAGE_SIZE,
-                }),
-            ),
-        );
-        const redeemed: RedeemedPositionEvent[] = redeemedResults.flatMap((r) => r.events);
-
-        const [claimedChecks, managerBalanceEntries] = await Promise.all([
-            mapWithConcurrency(redeemed, CLAIM_CHECK_CONCURRENCY, async (event) => {
-                if (!event.digest) return null;
-                const hasClaim = await checkHasWalletDusdcClaim(event.digest, wallet);
-                return hasClaim
-                    ? [
-                          event.oracleId,
-                          event.expiryMs.toString(),
-                          event.strike.toString(),
-                          event.isUp ? "UP" : "DOWN",
-                      ].join(":")
-                    : null;
-            }),
-            Promise.all(
-                managerIds.map(async (managerId) => {
-                    try {
-                        const balance = await readManagerBalance(suiClient, wallet, managerId);
-                        return [managerId, balance.toString()] as const;
-                    } catch {
-                        return null;
-                    }
-                }),
-            ),
-        ]);
-
-        const claimedKeys = claimedChecks.filter((key): key is string => key !== null);
-        const managerBalances = Object.fromEntries(
-            managerBalanceEntries.filter((e): e is [string, string] => e !== null),
-        );
-
-        return NextResponse.json({
-            minted: serializeBigInts(mintedResult.events),
-            rangeMinted: serializeBigInts(rangeMintedResult.events),
-            redeemed: serializeBigInts(redeemed),
-            claimedKeys,
-            managerBalances,
-            pagesInfo: {
-                mintedPagesRead: mintedResult.pagesRead,
-                mintedReachedLimit: mintedResult.reachedLimit,
-                rangePagesRead: rangeMintedResult.pagesRead,
-                rangeReachedLimit: rangeMintedResult.reachedLimit,
-                redeemedPagesRead: redeemedResults.reduce((acc, r) => acc + r.pagesRead, 0),
-                redeemedReachedLimit: redeemedResults.some((r) => r.reachedLimit),
-            },
-        });
+        const data = await buildPortfolioData(walletAddress);
+        portfolioCache.set(walletAddress, data);
+        return NextResponse.json(serializeBigInts(data));
     } catch (caught) {
         const message = caught instanceof Error ? caught.message : String(caught);
-        return NextResponse.json({ error: message }, { status: 500 });
+        const status = message.includes("Invalid walletAddress") ? 400 : 500;
+        return NextResponse.json({ error: message }, { status });
     }
 }

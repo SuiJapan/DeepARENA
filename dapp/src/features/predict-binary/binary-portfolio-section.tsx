@@ -735,62 +735,70 @@ export function BinaryPortfolioSection({
         });
     }, []);
 
-    const refresh = useCallback(async () => {
-        if (!address) {
-            setState(null);
-            setError(null);
-            setMessage(null);
-            setHistoryPage(1);
-            return;
-        }
-        setIsLoading(true);
-        setError(null);
-        try {
-            const response = await fetch(
-                `/api/predict/portfolio?wallet=${encodeURIComponent(address)}`,
-            );
-            if (!response.ok) {
-                const errorBody = await response.json().catch(() => ({}));
-                throw new Error(
-                    `Portfolio fetch failed: ${(isRecord(errorBody) && typeof errorBody.error === "string" ? errorBody.error : null) ?? response.status}`,
-                );
+    const refresh = useCallback(
+        async (forceFresh = false) => {
+            if (!address) {
+                setState(null);
+                setError(null);
+                setMessage(null);
+                setHistoryPage(1);
+                return;
             }
-            const data = (await response.json()) as PortfolioApiResponse;
+            setIsLoading(true);
+            setError(null);
+            try {
+                const url = forceFresh
+                    ? "/api/predict/portfolio?fresh=1"
+                    : "/api/predict/portfolio";
+                const response = await fetch(url, {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ walletAddress: address }),
+                });
+                if (!response.ok) {
+                    const errorBody = await response.json().catch(() => ({}));
+                    throw new Error(
+                        `Portfolio fetch failed: ${(isRecord(errorBody) && typeof errorBody.error === "string" ? errorBody.error : null) ?? response.status}`,
+                    );
+                }
+                const data = (await response.json()) as PortfolioApiResponse;
 
-            const mintedEvents = data.minted.map(deserializeMintedEvent);
-            const rangeMintedEvents = data.rangeMinted.map(deserializeRangeMintEvent);
-            const redeemedEvents = data.redeemed.map(deserializeRedeemedEvent);
+                const mintedEvents = data.minted.map(deserializeMintedEvent);
+                const rangeMintedEvents = data.rangeMinted.map(deserializeRangeMintEvent);
+                const redeemedEvents = data.redeemed.map(deserializeRedeemedEvent);
 
-            const oracleSettlements = await fetchOracleSettlements([
-                ...mintedEvents.map((e) => e.oracleId),
-                ...rangeMintedEvents.map((e) => e.oracleId),
-            ]);
+                const oracleSettlements = await fetchOracleSettlements([
+                    ...mintedEvents.map((e) => e.oracleId),
+                    ...rangeMintedEvents.map((e) => e.oracleId),
+                ]);
 
-            const managerBalances: Record<string, bigint> = Object.fromEntries(
-                Object.entries(data.managerBalances).map(([k, v]) => [k, BigInt(v)]),
-            );
+                const managerBalances: Record<string, bigint> = Object.fromEntries(
+                    Object.entries(data.managerBalances).map(([k, v]) => [k, BigInt(v)]),
+                );
 
-            setState({
-                minted: mintedEvents,
-                rangeMinted: rangeMintedEvents,
-                redeemed: redeemedEvents,
-                claimedKeys: data.claimedKeys,
-                oracleSettlements,
-                managerBalances,
-                mintedPagesRead: data.pagesInfo.mintedPagesRead,
-                rangePagesRead: data.pagesInfo.rangePagesRead,
-                redeemedPagesRead: data.pagesInfo.redeemedPagesRead,
-                mintedReachedLimit: data.pagesInfo.mintedReachedLimit,
-                rangeReachedLimit: data.pagesInfo.rangeReachedLimit,
-                redeemedReachedLimit: data.pagesInfo.redeemedReachedLimit,
-            });
-            setHistoryPage(1);
-        } catch (caught) {
-            setError(caught instanceof Error ? caught.message : String(caught));
-        } finally {
-            setIsLoading(false);
-        }
-    }, [address]);
+                setState({
+                    minted: mintedEvents,
+                    rangeMinted: rangeMintedEvents,
+                    redeemed: redeemedEvents,
+                    claimedKeys: data.claimedKeys,
+                    oracleSettlements,
+                    managerBalances,
+                    mintedPagesRead: data.pagesInfo.mintedPagesRead,
+                    rangePagesRead: data.pagesInfo.rangePagesRead,
+                    redeemedPagesRead: data.pagesInfo.redeemedPagesRead,
+                    mintedReachedLimit: data.pagesInfo.mintedReachedLimit,
+                    rangeReachedLimit: data.pagesInfo.rangeReachedLimit,
+                    redeemedReachedLimit: data.pagesInfo.redeemedReachedLimit,
+                });
+                setHistoryPage(1);
+            } catch (caught) {
+                setError(caught instanceof Error ? caught.message : String(caught));
+            } finally {
+                setIsLoading(false);
+            }
+        },
+        [address],
+    );
 
     useEffect(() => {
         void refresh();
@@ -1093,7 +1101,11 @@ export function BinaryPortfolioSection({
                         <span>BTC Binary</span>
                         <h2>Current Positions</h2>
                     </div>
-                    <button type="button" className="text-action" onClick={() => void refresh()}>
+                    <button
+                        type="button"
+                        className="text-action"
+                        onClick={() => void refresh(true)}
+                    >
                         Refresh
                     </button>
                 </div>
