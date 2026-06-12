@@ -477,7 +477,7 @@ function createTradePreviewDebugDetails({
 
 const loggedFirstPreviewExecutions = new Set<string>();
 const loggedReturnValueDecodes = new Set<string>();
-const MAX_LOGGED_PREVIEW_KEYS = 500;
+const MAX_LOGGED_PREVIEW_KEYS = 1000;
 
 function addBoundedPreviewLogKey(keys: Set<string>, key: string): boolean {
     if (keys.has(key)) {
@@ -511,6 +511,7 @@ function logFirstPreviewExecution({
     firstPreviewError: string | null;
     throwReason: string | null;
 }) {
+    if (process.env.DEBUG_PREDICT !== "1") return;
     const side = input.isUp ? "UP" : "DOWN";
     const key = [
         side,
@@ -561,6 +562,7 @@ function logTradeAmountDecode({
     mintCost: bigint;
     redeemPayout: bigint;
 }) {
+    if (process.env.DEBUG_PREDICT !== "1") return;
     const side = input.isUp ? "UP" : "DOWN";
     const key = [
         side,
@@ -874,13 +876,15 @@ async function previewRangeWithinBudgetBatched({
     if (!best) {
         throw new Error("Amount is too small for a mintable range quantity");
     }
-    console.info("Range preview batch search", {
-        rpcBatches: secondBatch.length > 0 ? 2 : 1,
-        candidates: candidates.length,
-        quantity: best.quantity.toString(),
-        mintCost: best.mintCost.toString(),
-        redeemPayout: best.redeemPayout.toString(),
-    });
+    if (process.env.DEBUG_PREDICT === "1") {
+        console.info("Range preview batch search", {
+            rpcBatches: secondBatch.length > 0 ? 2 : 1,
+            candidates: candidates.length,
+            quantity: best.quantity.toString(),
+            mintCost: best.mintCost.toString(),
+            redeemPayout: best.redeemPayout.toString(),
+        });
+    }
     return best;
 }
 
@@ -984,23 +988,27 @@ async function previewRangeWithinBudgetFastFallback({
     }
 
     if (!best) {
-        console.info("Range preview fast search no mintable quantity", {
-            attempts,
-            lastTriedQuantity: lastQuantity.toString(),
-            lastMintCost,
-            lastRedeemPayout,
-            budget: budget.toString(),
-        });
+        if (process.env.DEBUG_PREDICT === "1") {
+            console.info("Range preview fast search no mintable quantity", {
+                attempts,
+                lastTriedQuantity: lastQuantity.toString(),
+                lastMintCost,
+                lastRedeemPayout,
+                budget: budget.toString(),
+            });
+        }
         throw new Error("Amount is too small for a mintable range quantity");
     }
 
     const finalBest = best as RangeTradePreview;
-    console.info("Range preview fast search", {
-        attempts,
-        quantity: finalBest.quantity.toString(),
-        mintCost: finalBest.mintCost.toString(),
-        redeemPayout: finalBest.redeemPayout.toString(),
-    });
+    if (process.env.DEBUG_PREDICT === "1") {
+        console.info("Range preview fast search", {
+            attempts,
+            quantity: finalBest.quantity.toString(),
+            mintCost: finalBest.mintCost.toString(),
+            redeemPayout: finalBest.redeemPayout.toString(),
+        });
+    }
     return finalBest;
 }
 
@@ -1273,14 +1281,16 @@ async function previewBudgetedBinaryMarketsBatched({
                 }),
             );
         }
-        console.info("Binary odds preview batch search", {
-            side: market.isUp ? "UP" : "DOWN",
-            rpcBatches: secondRequests.length > 0 ? 2 : 1,
-            candidates: candidates.length,
-            quantity: best.quantity.toString(),
-            mintCost: best.mintCost.toString(),
-            redeemPayout: best.redeemPayout.toString(),
-        });
+        if (process.env.DEBUG_PREDICT === "1") {
+            console.info("Binary odds preview batch search", {
+                side: market.isUp ? "UP" : "DOWN",
+                rpcBatches: secondRequests.length > 0 ? 2 : 1,
+                candidates: candidates.length,
+                quantity: best.quantity.toString(),
+                mintCost: best.mintCost.toString(),
+                redeemPayout: best.redeemPayout.toString(),
+            });
+        }
         return best;
     });
 }
@@ -1599,13 +1609,15 @@ async function previewTradeWithinBudgetFastFallback({
     }
 
     const finalBest = best as BudgetedTradePreview;
-    console.info("Binary odds preview fast search", {
-        side: isUp ? "UP" : "DOWN",
-        attempts,
-        quantity: finalBest.quantity.toString(),
-        mintCost: finalBest.mintCost.toString(),
-        redeemPayout: finalBest.redeemPayout.toString(),
-    });
+    if (process.env.DEBUG_PREDICT === "1") {
+        console.info("Binary odds preview fast search", {
+            side: isUp ? "UP" : "DOWN",
+            attempts,
+            quantity: finalBest.quantity.toString(),
+            mintCost: finalBest.mintCost.toString(),
+            redeemPayout: finalBest.redeemPayout.toString(),
+        });
+    }
     return finalBest;
 }
 
@@ -1688,38 +1700,88 @@ export async function calculateQuantityWithinBudget({
     };
 }
 
-/**
- * Arena の players テーブルに playerAddress が登録済みかを PlayerJoined イベントで確認する。
- * ネットワークエラー時は false を返す（保守的）。
- */
+// Arena players テーブル ID のモジュールキャッシュ (初回取得後は RPC 不要)
+let cachedPlayersTableId: string | null = null;
+
+async function fetchPlayersTableId(): Promise<string | null> {
+    if (cachedPlayersTableId) return cachedPlayersTableId;
+    try {
+        const response = await fetch(PREDICT_BINARY_CONFIG.fullnodeJsonRpcUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+                jsonrpc: "2.0",
+                id: 1,
+                method: "sui_getObject",
+                params: [PREDICT_BINARY_CONFIG.arenaObjectId, { showContent: true }],
+            }),
+        });
+        if (!response.ok) return null;
+        const payload = (await response.json()) as unknown;
+        if (!isRecord(payload) || !isRecord(payload.result)) return null;
+        const data = isRecord(payload.result.data) ? payload.result.data : null;
+        const content = data && isRecord(data.content) ? data.content : null;
+        const fields = content && isRecord(content.fields) ? content.fields : null;
+        const players = fields && isRecord(fields.players) ? fields.players : null;
+        const playersFields = players && isRecord(players.fields) ? players.fields : null;
+        const playersIdObj = playersFields && isRecord(playersFields.id) ? playersFields.id : null;
+        const tableId =
+            playersIdObj && typeof playersIdObj.id === "string" ? playersIdObj.id : null;
+        if (tableId) cachedPlayersTableId = tableId;
+        return tableId;
+    } catch {
+        return null;
+    }
+}
+
 export async function checkArenaPlayerJoined(playerAddress: string): Promise<boolean> {
     try {
-        const eventType = `${PREDICT_BINARY_CONFIG.deepArenaPackageId}::events::PlayerJoined`;
-        const { events } = await queryMoveEvents({ eventType, maxPages: 5, pageSize: 50 });
-        const normalizedPlayer = playerAddress.toLowerCase();
-        const arenaId = PREDICT_BINARY_CONFIG.arenaObjectId.toLowerCase();
-        for (const event of events) {
-            if (!isRecord(event) || !isRecord(event.parsedJson)) continue;
-            const payload = event.parsedJson;
-            const player = typeof payload.player === "string" ? payload.player.toLowerCase() : "";
-            // arena_id は "0x..." or { id: "0x..." } のどちらにもなりうる
-            let eventArenaId = "";
-            if (typeof payload.arena_id === "string") {
-                eventArenaId = payload.arena_id.toLowerCase();
-            } else if (isRecord(payload.arena_id) && typeof payload.arena_id.id === "string") {
-                eventArenaId = (payload.arena_id.id as string).toLowerCase();
-            }
-            if (player === normalizedPlayer && eventArenaId === arenaId) {
-                return true;
-            }
-        }
-        return false;
+        const playersTableId = await fetchPlayersTableId();
+        if (!playersTableId) return false;
+        const response = await fetch(PREDICT_BINARY_CONFIG.fullnodeJsonRpcUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+                jsonrpc: "2.0",
+                id: 1,
+                method: "suix_getDynamicFieldObject",
+                params: [playersTableId, { type: "address", value: playerAddress }],
+            }),
+        });
+        if (!response.ok) return false;
+        const payload = (await response.json()) as unknown;
+        if (!isRecord(payload) || isRecord(payload.error)) return false;
+        const data = isRecord(payload.result) ? payload.result.data : null;
+        return isRecord(data);
     } catch {
         return false;
     }
 }
 
+// PredictManager の localStorage キャッシュ (キー: deeparena:predictManager:{address})
+const MANAGER_CACHE_KEY_PREFIX = "deeparena:predictManager:";
+
+export function saveCachedManagerId(address: string, managerId: string): void {
+    if (typeof window === "undefined") return;
+    try {
+        localStorage.setItem(`${MANAGER_CACHE_KEY_PREFIX}${address.toLowerCase()}`, managerId);
+    } catch {}
+}
+
+function readCachedManagerId(address: string): string | null {
+    if (typeof window === "undefined") return null;
+    try {
+        return localStorage.getItem(`${MANAGER_CACHE_KEY_PREFIX}${address.toLowerCase()}`);
+    } catch {
+        return null;
+    }
+}
+
 export async function findPredictManager(owner: string): Promise<string | null> {
+    const cached = readCachedManagerId(owner);
+    if (cached) return cached;
+
+    const managerCreatedType = `${PREDICT_BINARY_CONFIG.packageId}::predict_manager::PredictManagerCreated`;
     let cursor: unknown = null;
     for (let page = 0; page < 10; page += 1) {
         const response = await fetch(PREDICT_BINARY_CONFIG.fullnodeJsonRpcUrl, {
@@ -1728,11 +1790,9 @@ export async function findPredictManager(owner: string): Promise<string | null> 
             body: JSON.stringify({
                 jsonrpc: "2.0",
                 id: page + 1,
-                method: "suix_queryEvents",
+                method: "suix_queryTransactionBlocks",
                 params: [
-                    {
-                        MoveEventType: `${PREDICT_BINARY_CONFIG.packageId}::predict_manager::PredictManagerCreated`,
-                    },
+                    { filter: { FromAddress: owner }, options: { showEvents: true } },
                     cursor,
                     50,
                     true,
@@ -1740,7 +1800,7 @@ export async function findPredictManager(owner: string): Promise<string | null> 
             }),
         });
         if (!response.ok) {
-            throw new Error(`Manager event query failed: ${response.status}`);
+            throw new Error(`Manager TX query failed: ${response.status}`);
         }
         const payload = (await response.json()) as unknown;
         if (
@@ -1748,15 +1808,21 @@ export async function findPredictManager(owner: string): Promise<string | null> 
             !isRecord(payload.result) ||
             !Array.isArray(payload.result.data)
         ) {
-            throw new Error("Invalid manager event query response");
+            throw new Error("Invalid manager TX query response");
         }
-        for (const event of payload.result.data) {
-            if (!isRecord(event) || !isRecord(event.parsedJson)) {
-                continue;
-            }
-            const eventOwner = readString(event.parsedJson.owner, "owner").toLowerCase();
-            if (eventOwner === owner.toLowerCase()) {
-                return readString(event.parsedJson.manager_id, "manager_id");
+        for (const tx of payload.result.data) {
+            if (!isRecord(tx) || !Array.isArray(tx.events)) continue;
+            for (const event of tx.events) {
+                if (!isRecord(event) || !isRecord(event.parsedJson)) continue;
+                if (event.type !== managerCreatedType) continue;
+                const eventOwner =
+                    typeof event.parsedJson.owner === "string"
+                        ? event.parsedJson.owner.toLowerCase()
+                        : "";
+                if (eventOwner !== owner.toLowerCase()) continue;
+                const managerId = readString(event.parsedJson.manager_id, "manager_id");
+                saveCachedManagerId(owner, managerId);
+                return managerId;
             }
         }
         if (payload.result.hasNextPage !== true) {
@@ -1880,6 +1946,41 @@ interface QueryMoveEventsOptions {
     pageSize: number;
 }
 
+const EVENT_QUERY_MAX_ATTEMPTS = 3;
+const EVENT_QUERY_RETRY_BASE_DELAY_MS = 600;
+
+function delayMs(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchEventQueryPage(requestBody: string, eventType: string): Promise<unknown> {
+    let lastReason = "unknown";
+    for (let attempt = 1; attempt <= EVENT_QUERY_MAX_ATTEMPTS; attempt += 1) {
+        try {
+            const response = await fetch(PREDICT_BINARY_CONFIG.fullnodeJsonRpcUrl, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: requestBody,
+            });
+            if (response.ok) {
+                return (await response.json()) as unknown;
+            }
+            lastReason = `${response.status}`;
+            if (response.status !== 429 && response.status < 500) {
+                break;
+            }
+        } catch (caught) {
+            // fullnode のレートリミット応答には CORS ヘッダが付かないため、
+            // ブラウザでは fetch 自体が "Failed to fetch" で reject する。リトライ対象にする。
+            lastReason = caught instanceof Error ? caught.message : String(caught);
+        }
+        if (attempt < EVENT_QUERY_MAX_ATTEMPTS) {
+            await delayMs(EVENT_QUERY_RETRY_BASE_DELAY_MS * attempt);
+        }
+    }
+    throw new Error(`Event query failed for ${eventType}: ${lastReason}`);
+}
+
 async function queryMoveEvents({ eventType, maxPages, pageSize }: QueryMoveEventsOptions): Promise<{
     events: unknown[];
     pagesRead: number;
@@ -1888,20 +1989,15 @@ async function queryMoveEvents({ eventType, maxPages, pageSize }: QueryMoveEvent
     const events: unknown[] = [];
     let cursor: unknown = null;
     for (let page = 0; page < maxPages; page += 1) {
-        const response = await fetch(PREDICT_BINARY_CONFIG.fullnodeJsonRpcUrl, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
+        const payload = await fetchEventQueryPage(
+            JSON.stringify({
                 jsonrpc: "2.0",
                 id: page + 1,
                 method: "suix_queryEvents",
                 params: [{ MoveEventType: eventType }, cursor, pageSize, true],
             }),
-        });
-        if (!response.ok) {
-            throw new Error(`Event query failed for ${eventType}: ${response.status}`);
-        }
-        const payload = (await response.json()) as unknown;
+            eventType,
+        );
         if (
             !isRecord(payload) ||
             !isRecord(payload.result) ||

@@ -66,6 +66,22 @@ interface RangePreviewFailure {
 
 type RangePreviewResponse = RangePreviewSuccess | BreakPreviewSuccess | RangePreviewFailure;
 
+const RATE_LIMIT_WINDOW_MS = 10_000;
+const RATE_LIMIT_MAX = 10;
+const ipCounts = new Map<string, { count: number; resetAt: number }>();
+
+function checkRateLimit(ip: string): boolean {
+    const now = Date.now();
+    const entry = ipCounts.get(ip);
+    if (!entry || now >= entry.resetAt) {
+        ipCounts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+        return true;
+    }
+    if (entry.count >= RATE_LIMIT_MAX) return false;
+    entry.count++;
+    return true;
+}
+
 const rangePreviewCache = getSharedPreviewCache<RangePreviewResponse>("predict:range-preview");
 
 const suiClient = new SuiJsonRpcClient({
@@ -299,6 +315,13 @@ async function buildRangePreviewResponse(
 }
 
 export async function POST(request: Request): Promise<NextResponse<RangePreviewResponse>> {
+    const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+    if (!checkRateLimit(ip)) {
+        return NextResponse.json(
+            failureResponse("RANGE", "rate-limited", "Too many requests", "RATE_LIMITED"),
+            { status: 429 },
+        );
+    }
     let previewKey = "invalid";
     let direction: "RANGE" | "BREAK" = "RANGE";
     try {

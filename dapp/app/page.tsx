@@ -237,6 +237,24 @@ function NextRangeRoundCard({ roundMarket }: { roundMarket: PredictRoundMarket |
     );
 }
 
+function LeaderboardSkeleton() {
+    return (
+        <section className="surface leaderboard">
+            <div className="section-title">
+                <div>
+                    <span>Live standings</span>
+                    <h2>Leaderboard</h2>
+                </div>
+            </div>
+            <div className="leader-list" aria-busy="true">
+                {[1, 2, 3].map((n) => (
+                    <div className="leader-row skeleton" key={n} />
+                ))}
+            </div>
+        </section>
+    );
+}
+
 function Leaderboard({
     players,
     currentScore,
@@ -275,15 +293,11 @@ function Leaderboard({
 
 function HomeContent() {
     const [view, setView] = useState<View>("arena");
-    const { snapshot, error, isLoading } = useDeepArena();
+    const { snapshot, error } = useDeepArena();
     const predictRound = usePredictRound();
     const market = useMarketStream(predictRound.market?.currentOracle?.oracleId ?? null);
 
-    if (isLoading || !snapshot) {
-        return <main className="status-screen">Loading Deep Arena mock...</main>;
-    }
-
-    const { players } = snapshot;
+    const players = snapshot?.players ?? null;
 
     return (
         <main className="app-shell">
@@ -339,7 +353,11 @@ function HomeContent() {
                                 }
                                 market={market}
                             />
-                            <Leaderboard players={players} />
+                            {players !== null ? (
+                                <Leaderboard players={players} />
+                            ) : (
+                                <LeaderboardSkeleton />
+                            )}
                         </div>
                     </section>
                 </>

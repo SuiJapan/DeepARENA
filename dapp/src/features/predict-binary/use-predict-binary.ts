@@ -26,6 +26,7 @@ import {
     readMintEvent,
     readRedeemEvent,
     readWalletQuoteBalance,
+    saveCachedManagerId,
 } from "@/src/lib/predict-binary/client";
 import { PREDICT_BINARY_CONFIG, predictBinaryExplorerUrl } from "@/src/lib/predict-binary/config";
 import { readSuiEventPayloads } from "@/src/lib/predict-binary/events";
@@ -508,6 +509,15 @@ export function usePredictBinary(
         });
     }, [address, isTestnet]);
 
+    // address 変化時のみ manager ID を取得してキャッシュ。15秒ごとの refresh() では呼ばない
+    useEffect(() => {
+        if (!address || !isTestnet) {
+            setManagerId(null);
+            return;
+        }
+        void findPredictManager(address).then(setManagerId);
+    }, [address, isTestnet]);
+
     const isBusy = txStatus === "CONFIRM IN WALLET" || txStatus === "SUBMITTING";
     const isBettingOpen = roundMarket?.state === "BETTING_OPEN";
     const oracleTimestampMs = roundMarket?.currentOracle?.timestampMs ?? null;
@@ -519,7 +529,6 @@ export function usePredictBinary(
     const refresh = useCallback(async () => {
         if (!address || !isTestnet) {
             setMarket(null);
-            setManagerId(null);
             setPosition(null);
             setSidePositions(emptySidePositions());
             setMessage(
@@ -537,22 +546,10 @@ export function usePredictBinary(
         }
 
         try {
-            const [nextWalletBalance, foundManagerId] = await Promise.all([
-                readWalletQuoteBalance(client, address),
-                findPredictManager(address),
-            ]);
-            const nextMarket = { ...baseMarket };
-            setMarket(nextMarket);
+            const nextWalletBalance = await readWalletQuoteBalance(client, address);
+            setMarket({ ...baseMarket });
             setWalletBalance(nextWalletBalance);
-            setManagerId(foundManagerId);
-
-            if (foundManagerId) {
-                setManagerBalance(0n);
-            } else {
-                setManagerBalance(0n);
-                setPosition(null);
-                setSidePositions(emptySidePositions());
-            }
+            setManagerBalance(0n);
             if (!isBusy) {
                 setTxStatus("READY");
                 setMessage(isBettingOpen ? "BET NOW" : "BETTING CLOSED");
@@ -1136,6 +1133,7 @@ export function usePredictBinary(
                     if (!nextManagerId) {
                         throw new Error("PredictManager creation could not be confirmed");
                     }
+                    saveCachedManagerId(address, nextManagerId);
                     setManagerId(nextManagerId);
                 }
 

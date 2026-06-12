@@ -13,7 +13,7 @@ export const PREDICT_BINARY_CONFIG = {
     clockObjectId: "0x6",
     priceScale: 1_000_000_000n,
     quantityUnit: 1_000_000n,
-    fullnodeJsonRpcUrl: "https://fullnode.testnet.sui.io",
+    fullnodeJsonRpcUrl: process.env.SUI_FULLNODE_URL ?? "https://fullnode.testnet.sui.io",
     deepArenaPackageId: deepArenaMockConfig.deepArenaPackageId,
     arenaObjectId: deepArenaMockConfig.arenaObjectId,
     feeBps: deepArenaMockConfig.feeBps,

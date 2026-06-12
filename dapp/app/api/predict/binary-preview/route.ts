@@ -68,6 +68,30 @@ interface PreviewResponse {
     down: SideResponse;
 }
 
+interface PreviewErrorResponse {
+    ok: false;
+    previewKey: string;
+    cacheHit: false;
+    up: SideFailureResponse;
+    down: SideFailureResponse;
+}
+
+const RATE_LIMIT_WINDOW_MS = 10_000;
+const RATE_LIMIT_MAX = 10;
+const ipCounts = new Map<string, { count: number; resetAt: number }>();
+
+function checkRateLimit(ip: string): boolean {
+    const now = Date.now();
+    const entry = ipCounts.get(ip);
+    if (!entry || now >= entry.resetAt) {
+        ipCounts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+        return true;
+    }
+    if (entry.count >= RATE_LIMIT_MAX) return false;
+    entry.count++;
+    return true;
+}
+
 const binaryPreviewCache = getSharedPreviewCache<PreviewResponse>("predict:binary-preview");
 
 const suiClient = new SuiJsonRpcClient({
@@ -266,7 +290,16 @@ export function warmBinaryPreviewCache(input: {
     });
 }
 
-export async function POST(request: Request): Promise<NextResponse<PreviewResponse>> {
+export async function POST(request: Request): Promise<NextResponse<PreviewResponse | PreviewErrorResponse>> {
+    const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+    if (!checkRateLimit(ip)) {
+        const previewKey = "rate-limited";
+        const rateLimitFailure = failureResponse("Too many requests", "RATE_LIMITED");
+        return NextResponse.json(
+            { ok: false, previewKey, cacheHit: false, up: rateLimitFailure, down: rateLimitFailure },
+            { status: 429 },
+        );
+    }
     try {
         const body = parseBody(await request.json());
         if (BigInt(body.betAmountAtomic) <= 0n) {
@@ -313,7 +346,7 @@ export async function POST(request: Request): Promise<NextResponse<PreviewRespon
         const previewKey = "invalid";
         return NextResponse.json(
             {
-                ok: true,
+                ok: false,
                 previewKey,
                 cacheHit: false,
                 up: failureResponse(
