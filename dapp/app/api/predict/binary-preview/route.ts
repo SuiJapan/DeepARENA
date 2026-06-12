@@ -2,11 +2,14 @@ import { NextResponse } from "next/server";
 import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { PREDICT_BINARY_CONFIG } from "@/src/lib/predict-binary/config";
 import {
+    previewBinarySidesWithinBudgetFast,
     previewTradeWithinBudgetFast,
     TradePreviewError,
     type BudgetedTradePreview,
 } from "@/src/lib/predict-binary/client";
 import { formatBinaryOddsFromQuantity } from "@/src/lib/predict-binary/odds";
+import { buildBinaryPreviewCacheKey } from "@/src/lib/predict-binary/preview-key";
+import { getSharedPreviewCache } from "@/src/lib/server/preview-cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +25,7 @@ interface PreviewRequest {
     oracleTimestampMs: string;
     predictObjectId: string;
     quoteCoinType: string;
+    cachePolicy: PreviewCachePolicy;
 }
 
 interface SideSuccessResponse {
@@ -54,6 +58,7 @@ interface SideDebug {
 }
 
 type SideResponse = SideSuccessResponse | SideFailureResponse;
+type PreviewCachePolicy = "read-through" | "bypass";
 
 interface PreviewResponse {
     ok: true;
@@ -63,8 +68,31 @@ interface PreviewResponse {
     down: SideResponse;
 }
 
-const CACHE_TTL_MS = 4_000;
-const previewCache = new Map<string, { expiresAt: number; response: PreviewResponse }>();
+interface PreviewErrorResponse {
+    ok: false;
+    previewKey: string;
+    cacheHit: false;
+    up: SideFailureResponse;
+    down: SideFailureResponse;
+}
+
+const RATE_LIMIT_WINDOW_MS = 10_000;
+const RATE_LIMIT_MAX = 10;
+const ipCounts = new Map<string, { count: number; resetAt: number }>();
+
+function checkRateLimit(ip: string): boolean {
+    const now = Date.now();
+    const entry = ipCounts.get(ip);
+    if (!entry || now >= entry.resetAt) {
+        ipCounts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+        return true;
+    }
+    if (entry.count >= RATE_LIMIT_MAX) return false;
+    entry.count++;
+    return true;
+}
+
+const binaryPreviewCache = getSharedPreviewCache<PreviewResponse>("predict:binary-preview");
 
 const suiClient = new SuiJsonRpcClient({
     network: PREDICT_BINARY_CONFIG.network,
@@ -90,6 +118,16 @@ function readU64String(value: unknown, fieldName: string): string {
     return text;
 }
 
+function readCachePolicy(value: unknown): PreviewCachePolicy {
+    if (value === undefined || value === "read-through") {
+        return "read-through";
+    }
+    if (value === "bypass") {
+        return "bypass";
+    }
+    throw new Error("Invalid cachePolicy");
+}
+
 function parseBody(value: unknown): PreviewRequest {
     if (!isRecord(value)) {
         throw new Error("Invalid request body");
@@ -103,6 +141,7 @@ function parseBody(value: unknown): PreviewRequest {
         oracleTimestampMs: readU64String(value.oracleTimestampMs, "oracleTimestampMs"),
         predictObjectId: readString(value.predictObjectId, "predictObjectId"),
         quoteCoinType: readString(value.quoteCoinType, "quoteCoinType"),
+        cachePolicy: readCachePolicy(value.cachePolicy),
     };
     if (request.predictObjectId !== PREDICT_BINARY_CONFIG.predictObjectId) {
         throw new Error("Invalid predictObjectId");
@@ -175,13 +214,12 @@ function failureResponse(error: string, reason: string, caught?: unknown): SideF
 }
 
 function buildPreviewKey(body: PreviewRequest): string {
-    return [
-        body.oracleId,
-        body.expiryMs,
-        body.referenceStrikeRaw,
-        body.oracleTimestampMs,
-        body.betAmountAtomic,
-    ].join(":");
+    return buildBinaryPreviewCacheKey({
+        oracleId: body.oracleId,
+        expiryMs: body.expiryMs,
+        referenceStrikeRaw: body.referenceStrikeRaw,
+        betAmountAtomic: body.betAmountAtomic,
+    });
 }
 
 async function previewSide(body: PreviewRequest, side: PreviewSide): Promise<SideResponse> {
@@ -208,7 +246,60 @@ async function previewSide(body: PreviewRequest, side: PreviewSide): Promise<Sid
     }
 }
 
-export async function POST(request: Request): Promise<NextResponse<PreviewResponse>> {
+async function buildPreviewResponse(body: PreviewRequest, previewKey: string): Promise<PreviewResponse> {
+    try {
+        const { up, down } = await previewBinarySidesWithinBudgetFast({
+            client: suiClient,
+            sender: body.walletAddress,
+            oracleId: body.oracleId,
+            expiryMs: Number(body.expiryMs),
+            strike: BigInt(body.referenceStrikeRaw),
+            budget: BigInt(body.betAmountAtomic),
+        });
+        return {
+            ok: true,
+            previewKey,
+            cacheHit: false,
+            up: successResponse(up),
+            down: successResponse(down),
+        };
+    } catch {
+        const [up, down] = await Promise.all([previewSide(body, "UP"), previewSide(body, "DOWN")]);
+        return { ok: true, previewKey, cacheHit: false, up, down };
+    }
+}
+
+function hasSuccessfulSide(response: PreviewResponse): boolean {
+    return response.up.ok || response.down.ok;
+}
+
+export function warmBinaryPreviewCache(input: {
+    walletAddress: string;
+    betAmountAtomic: string;
+    oracleId: string;
+    expiryMs: string;
+    referenceStrikeRaw: string;
+    oracleTimestampMs: string;
+    predictObjectId: string;
+    quoteCoinType: string;
+}): void {
+    const body = { ...input, cachePolicy: "read-through" as const };
+    const previewKey = buildPreviewKey(body);
+    binaryPreviewCache.warm(previewKey, () => buildPreviewResponse(body, previewKey), {
+        shouldCache: hasSuccessfulSide,
+    });
+}
+
+export async function POST(request: Request): Promise<NextResponse<PreviewResponse | PreviewErrorResponse>> {
+    const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+    if (!checkRateLimit(ip)) {
+        const previewKey = "rate-limited";
+        const rateLimitFailure = failureResponse("Too many requests", "RATE_LIMITED");
+        return NextResponse.json(
+            { ok: false, previewKey, cacheHit: false, up: rateLimitFailure, down: rateLimitFailure },
+            { status: 429 },
+        );
+    }
     try {
         const body = parseBody(await request.json());
         if (BigInt(body.betAmountAtomic) <= 0n) {
@@ -223,31 +314,39 @@ export async function POST(request: Request): Promise<NextResponse<PreviewRespon
         }
 
         const previewKey = buildPreviewKey(body);
-        const cached = previewCache.get(previewKey);
-        if (cached && cached.expiresAt > Date.now()) {
-            return NextResponse.json({ ...cached.response, cacheHit: true });
-        }
-
-        const [up, down] = await Promise.all([previewSide(body, "UP"), previewSide(body, "DOWN")]);
-        const response = { ok: true as const, previewKey, cacheHit: false, up, down };
-        if (up.ok || down.ok) {
-            previewCache.set(previewKey, { expiresAt: Date.now() + CACHE_TTL_MS, response });
+        const response =
+            body.cachePolicy === "read-through"
+                ? await binaryPreviewCache.getOrLoad(
+                      previewKey,
+                      () => buildPreviewResponse(body, previewKey),
+                      { shouldCache: hasSuccessfulSide },
+                  )
+                : {
+                      value: await buildPreviewResponse(body, previewKey),
+                      state: "miss" as const,
+                  };
+        const jsonResponse = {
+            ...response.value,
+            cacheHit: response.state === "fresh" || response.state === "stale",
+        };
+        if (response.state === "fresh" || response.state === "stale") {
+            return NextResponse.json(jsonResponse);
         }
         console.info("Binary preview API response", {
             previewKey,
-            upOk: up.ok,
-            downOk: down.ok,
-            upQuantity: up.ok ? up.quantity : null,
-            downQuantity: down.ok ? down.quantity : null,
-            cacheTtlMs: CACHE_TTL_MS,
+            upOk: jsonResponse.up.ok,
+            downOk: jsonResponse.down.ok,
+            upQuantity: jsonResponse.up.ok ? jsonResponse.up.quantity : null,
+            downQuantity: jsonResponse.down.ok ? jsonResponse.down.quantity : null,
+            cacheState: response.state,
         });
-        return NextResponse.json(response);
+        return NextResponse.json(jsonResponse);
     } catch (caught) {
         console.error("binary-preview route fatal error", caught);
         const previewKey = "invalid";
         return NextResponse.json(
             {
-                ok: true,
+                ok: false,
                 previewKey,
                 cacheHit: false,
                 up: failureResponse(

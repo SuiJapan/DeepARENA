@@ -88,6 +88,25 @@ interface DynamicFieldEntry {
     objectId: string;
 }
 
+async function multiGetObjectsFields(
+    objectIds: string[],
+): Promise<Array<Record<string, unknown> | null>> {
+    if (objectIds.length === 0) return [];
+    const result = await rpc("sui_multiGetObjects", [
+        objectIds,
+        { showContent: true, showType: true },
+    ]);
+    if (!Array.isArray(result)) return objectIds.map(() => null);
+    return result.map((item) => {
+        if (!isRecord(item)) return null;
+        const data = isRecord(item.data) ? item.data : null;
+        if (!data) return null;
+        const content = isRecord(data.content) ? data.content : null;
+        if (!content) return null;
+        return isRecord(content.fields) ? content.fields : null;
+    });
+}
+
 async function listDynamicFields(parentId: string): Promise<DynamicFieldEntry[]> {
     const entries: DynamicFieldEntry[] = [];
     let cursor: unknown = null;
@@ -178,16 +197,20 @@ export class ContractDeepArenaClient implements DeepArenaClient {
         const dynamicFields = await listDynamicFields(tableId);
         if (dynamicFields.length === 0) return [];
 
+        const BATCH_SIZE = 50;
         const players: PlayerSummary[] = [];
-        await Promise.all(
-            dynamicFields.map(async (entry) => {
+        for (let i = 0; i < dynamicFields.length; i += BATCH_SIZE) {
+            const batch = dynamicFields.slice(i, i + BATCH_SIZE);
+            const ids = batch.map((e) => e.objectId);
+            const batchFields = await multiGetObjectsFields(ids);
+            for (const objFields of batchFields) {
+                if (!objFields) continue;
                 try {
-                    const objFields = await getObjectFields(entry.objectId);
                     // Dynamic field: { name: address, value: PlayerStats }
                     const playerAddress = readString(objFields.name, "player.address");
                     const statsRaw = objFields.value;
                     const stats = isRecord(statsRaw) ? readFields(statsRaw, "player.stats") : null;
-                    if (!stats) return;
+                    if (!stats) continue;
 
                     const score = readU64(stats.score, "score");
                     const managerId = readObjectId(stats.manager_id, "manager_id");
@@ -212,8 +235,8 @@ export class ContractDeepArenaClient implements DeepArenaClient {
                 } catch {
                     // skip unreadable entries
                 }
-            }),
-        );
+            }
+        }
 
         players.sort((a, b) => {
             const diff = BigInt(b.score.atomic) - BigInt(a.score.atomic);

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { warmBinaryPreviewCache } from "@/app/api/predict/binary-preview/route";
 import { PREDICT_BINARY_CONFIG } from "@/src/lib/predict-binary/config";
 import {
     buildSettlementRoundLock,
@@ -12,6 +13,10 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const DEFAULT_PREVIEW_BET_AMOUNT_ATOMIC = (
+    10n * 10n ** BigInt(PREDICT_BINARY_CONFIG.quoteDecimals)
+).toString();
 
 interface OracleSummary {
     oracleId: string;
@@ -879,6 +884,27 @@ function previousOracleStateDebug(state: OracleState | null): NonNullable<Market
     };
 }
 
+function warmDefaultBinaryPreviewCache(response: MarketResponse): void {
+    if (response.state !== "BETTING_OPEN" || !response.currentOracle || !response.round) {
+        return;
+    }
+    warmBinaryPreviewCache({
+        walletAddress: PREDICT_BINARY_CONFIG.predictObjectId,
+        betAmountAtomic: DEFAULT_PREVIEW_BET_AMOUNT_ATOMIC,
+        oracleId: response.currentOracle.oracleId,
+        expiryMs: response.currentOracle.expiryMs.toString(),
+        referenceStrikeRaw: response.round.binaryStrikeRaw,
+        oracleTimestampMs: String(response.currentOracle.timestampMs ?? 0),
+        predictObjectId: PREDICT_BINARY_CONFIG.predictObjectId,
+        quoteCoinType: PREDICT_BINARY_CONFIG.quoteCoinType,
+    });
+}
+
+function marketJson(response: MarketResponse, init?: ResponseInit): NextResponse<MarketResponse> {
+    warmDefaultBinaryPreviewCache(response);
+    return NextResponse.json(response, init);
+}
+
 export async function GET(): Promise<NextResponse<MarketResponse>> {
     let currentOracleForLog: OracleCandidate | null = null;
     let previousOracleForLog: OracleCandidate | null = null;
@@ -1197,7 +1223,7 @@ export async function GET(): Promise<NextResponse<MarketResponse>> {
             });
         }
 
-        return NextResponse.json({
+        return marketJson({
             state,
             currentOracle: currentOracleResponse,
             previousOracle: previousOracleResponse,
