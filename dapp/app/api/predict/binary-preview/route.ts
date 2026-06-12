@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { PREDICT_BINARY_CONFIG } from "@/src/lib/predict-binary/config";
 import {
+    previewBinarySidesWithinBudgetFast,
     previewTradeWithinBudgetFast,
     TradePreviewError,
     type BudgetedTradePreview,
@@ -222,8 +223,26 @@ async function previewSide(body: PreviewRequest, side: PreviewSide): Promise<Sid
 }
 
 async function buildPreviewResponse(body: PreviewRequest, previewKey: string): Promise<PreviewResponse> {
-    const [up, down] = await Promise.all([previewSide(body, "UP"), previewSide(body, "DOWN")]);
-    return { ok: true, previewKey, cacheHit: false, up, down };
+    try {
+        const { up, down } = await previewBinarySidesWithinBudgetFast({
+            client: suiClient,
+            sender: body.walletAddress,
+            oracleId: body.oracleId,
+            expiryMs: Number(body.expiryMs),
+            strike: BigInt(body.referenceStrikeRaw),
+            budget: BigInt(body.betAmountAtomic),
+        });
+        return {
+            ok: true,
+            previewKey,
+            cacheHit: false,
+            up: successResponse(up),
+            down: successResponse(down),
+        };
+    } catch {
+        const [up, down] = await Promise.all([previewSide(body, "UP"), previewSide(body, "DOWN")]);
+        return { ok: true, previewKey, cacheHit: false, up, down };
+    }
 }
 
 function hasSuccessfulSide(response: PreviewResponse): boolean {

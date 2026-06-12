@@ -1,5 +1,5 @@
 import { coinWithBalance, Transaction } from "@mysten/sui/transactions";
-import { PREDICT_BINARY_CONFIG } from "./config";
+import { PREDICT_BINARY_CONFIG } from "./config.ts";
 
 /** Deep Arena パッケージ内の関数ターゲットを返す */
 const arenaTarget = (moduleName: string, functionName: string) =>
@@ -31,6 +31,16 @@ export interface BinaryMarketKeyInput {
     expiryMs: number;
     strike: bigint;
     isUp: boolean;
+}
+
+export interface BatchBinaryPreviewInput {
+    key: BinaryMarketKeyInput;
+    quantity: bigint;
+}
+
+export interface BatchRangePreviewInput {
+    key: RangeKeyInput;
+    quantity: bigint;
 }
 
 export interface MintBinaryTransactionInput extends BinaryMarketKeyInput {
@@ -164,6 +174,31 @@ export function createPreviewTradeAmountsTransaction({
     return tx;
 }
 
+export function createBatchPreviewTransaction({
+    sender,
+    inputs,
+}: {
+    sender: string;
+    inputs: BatchBinaryPreviewInput[];
+}): Transaction {
+    const tx = new Transaction();
+    tx.setSender(sender);
+    for (const input of inputs) {
+        const key = addMarketKey(tx, input.key);
+        tx.moveCall({
+            target: target("predict", "get_trade_amounts"),
+            arguments: [
+                tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
+                tx.object(input.key.oracleId),
+                key,
+                tx.pure.u64(input.quantity),
+                tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
+            ],
+        });
+    }
+    return tx;
+}
+
 export function createReadManagerBalanceTransaction({
     sender,
     managerId,
@@ -217,6 +252,31 @@ export function createPreviewRangeTradeAmountsTransaction({
             tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
         ],
     });
+    return tx;
+}
+
+export function createBatchRangePreviewTransaction({
+    sender,
+    inputs,
+}: {
+    sender: string;
+    inputs: BatchRangePreviewInput[];
+}): Transaction {
+    const tx = new Transaction();
+    tx.setSender(sender);
+    for (const input of inputs) {
+        const key = addRangeKey(tx, input.key);
+        tx.moveCall({
+            target: target("predict", "get_range_trade_amounts"),
+            arguments: [
+                tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
+                tx.object(input.key.oracleId),
+                key,
+                tx.pure.u64(input.quantity),
+                tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
+            ],
+        });
+    }
     return tx;
 }
 

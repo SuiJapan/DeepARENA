@@ -1,7 +1,7 @@
 import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { NextResponse } from "next/server";
 import {
-    previewTradeWithinBudgetFast,
+    previewBreakWithinBudgetFast,
     previewRangeWithinBudgetFast,
     type RangeTradePreview,
     type BudgetedTradePreview,
@@ -222,26 +222,16 @@ async function buildRangePreviewResponse(
         if (lowerBudget <= 0n || upperBudget <= 0n) {
             return failureResponse(direction, previewKey, "Preview failed", "BET_AMOUNT_TOO_SMALL");
         }
-        const [lowerLeg, upperLeg] = await Promise.all([
-            previewTradeWithinBudgetFast({
-                client: suiClient,
-                sender: body.walletAddress,
-                oracleId: body.oracleId,
-                expiryMs: Number(body.expiryMs),
-                strike: BigInt(body.lowerStrikeRaw),
-                isUp: false,
-                budget: lowerBudget,
-            }),
-            previewTradeWithinBudgetFast({
-                client: suiClient,
-                sender: body.walletAddress,
-                oracleId: body.oracleId,
-                expiryMs: Number(body.expiryMs),
-                strike: BigInt(body.higherStrikeRaw),
-                isUp: true,
-                budget: upperBudget,
-            }),
-        ]);
+        const { lowerLeg, upperLeg } = await previewBreakWithinBudgetFast({
+            client: suiClient,
+            sender: body.walletAddress,
+            oracleId: body.oracleId,
+            expiryMs: Number(body.expiryMs),
+            lowerStrike: BigInt(body.lowerStrikeRaw),
+            higherStrike: BigInt(body.higherStrikeRaw),
+            lowerBudget,
+            upperBudget,
+        });
         if (process.env.NODE_ENV !== "production") {
             const totalCost = lowerLeg.mintCost + upperLeg.mintCost;
             const effectivePayout =

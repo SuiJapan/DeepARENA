@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { bcs } from "@mysten/sui/bcs";
 import { readSuiEventPayload, readSuiEventPayloads } from "./events.ts";
 import { formatBinaryOddsFromQuantity } from "./odds.ts";
 import { findBudgetedTradePreview } from "./preview.ts";
+import { decodeAllTradeAmountReturns } from "./preview-decode.ts";
 
 test("formats live odds as quantity divided by mint cost", () => {
     assert.equal(formatBinaryOddsFromQuantity(18_000_000n, 10_000_000n), "1.80x");
@@ -127,4 +129,43 @@ test("reads both Sui event payload shapes for diagnostics", () => {
             manager_id: "0xjson",
         },
     });
+});
+
+test("decodes all trade amount returns from multiple command results", () => {
+    const result = {
+        $kind: "Transaction",
+        commandResults: [
+            { returnValues: [] },
+            {
+                returnValues: [
+                    { bcs: bcs.U64.serialize(10n).toBytes() },
+                    { bcs: bcs.U64.serialize(20n).toBytes() },
+                ],
+            },
+            {
+                returnValues: [
+                    { bcs: bcs.U64.serialize(30n).toBytes() },
+                    { bcs: bcs.U64.serialize(40n).toBytes() },
+                ],
+            },
+        ],
+    };
+
+    assert.deepEqual(decodeAllTradeAmountReturns(result), [
+        { mintCost: 10n, redeemPayout: 20n },
+        { mintCost: 30n, redeemPayout: 40n },
+    ]);
+});
+
+test("decodes all trade amount returns from 16-byte tuple values", () => {
+    const tuple = new Uint8Array(16);
+    const view = new DataView(tuple.buffer);
+    view.setBigUint64(0, 55n, true);
+    view.setBigUint64(8, 89n, true);
+    const result = {
+        $kind: "Transaction",
+        commandResults: [{ returnValues: [{ bcs: tuple }] }],
+    };
+
+    assert.deepEqual(decodeAllTradeAmountReturns(result), [{ mintCost: 55n, redeemPayout: 89n }]);
 });
