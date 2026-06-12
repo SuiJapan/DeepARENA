@@ -32,6 +32,11 @@ import {
     describeMintBreakMoveCalls,
     describeMintRangeMoveCalls,
 } from "@/src/lib/predict-binary/transactions";
+import {
+    RANGE_WIDTH_CANDIDATES_TICKS,
+    rangeProbabilityBps,
+    selectRangeWidthQuote,
+} from "@/src/lib/predict-range/range-width";
 import { GRID_TICKS } from "@/src/lib/predict-round/round";
 import {
     isWalletUserRejection,
@@ -144,8 +149,8 @@ type RangePreviewApiResponse =
     | BreakPreviewApiSuccess
     | RangePreviewApiFailure;
 
-const FIXED_RANGE_WIDTH_TICKS = 1000n;
 const RANGE_PREVIEW_COOLDOWN_MS = 30_000;
+const RANGE_ODDS_UNAVAILABLE_MESSAGE = "Range odds are temporarily unavailable";
 
 interface CachedRangePreview {
     preview: RangePreview;
@@ -207,11 +212,11 @@ function rangeBaseMarketFromRound(roundMarket: PredictRoundMarket | null): Range
     };
 }
 
-function rangeMarketFromBase(base: RangeBaseMarket | null): RangeMarket | null {
+function rangeMarketFromBase(base: RangeBaseMarket | null, widthTicks: bigint): RangeMarket | null {
     if (!base) {
         return null;
     }
-    const widthRaw = base.tickSize * FIXED_RANGE_WIDTH_TICKS;
+    const widthRaw = base.tickSize * widthTicks;
     if (base.referenceStrike <= widthRaw) {
         return null;
     }
@@ -232,9 +237,37 @@ function rangeMarketFromBase(base: RangeBaseMarket | null): RangeMarket | null {
         referenceStrike: base.referenceStrike,
         lowerStrike,
         higherStrike,
-        widthTicks: FIXED_RANGE_WIDTH_TICKS,
+        widthTicks,
         oracleTimestampMs: base.oracleTimestampMs,
     };
+}
+
+function rangeMarketsFromBase(base: RangeBaseMarket | null): RangeMarket[] {
+    return RANGE_WIDTH_CANDIDATES_TICKS.flatMap((widthTicks) => {
+        const market = rangeMarketFromBase(base, widthTicks);
+        return market ? [market] : [];
+    });
+}
+
+function buildCandidateSetPreviewKey({
+    address,
+    base,
+    markets,
+    budget,
+}: {
+    address: string;
+    base: RangeBaseMarket;
+    markets: RangeMarket[];
+    budget: bigint;
+}): string {
+    return [
+        address,
+        base.oracleId,
+        base.expiryMs.toString(),
+        base.referenceStrike.toString(),
+        budget.toString(),
+        markets.map((market) => market.widthTicks.toString()).join(","),
+    ].join(":");
 }
 
 function buildPreviewKey({
@@ -291,6 +324,14 @@ function isRateLimitPreviewReason(reason: string): boolean {
 }
 
 function userFacingPreviewReason(reason: string): string {
+    const normalized = reason.toLowerCase();
+    if (
+        normalized.includes("moveabort") ||
+        normalized.includes("quote_spread_from_fair_price") ||
+        normalized.includes("trade_preview_failed")
+    ) {
+        return RANGE_ODDS_UNAVAILABLE_MESSAGE;
+    }
     return isRateLimitPreviewReason(reason) ? "Preview temporarily unavailable" : reason;
 }
 
@@ -300,6 +341,9 @@ function userFacingAggregatePreviewReason(reason: string | null): string | null 
     }
     if (isRateLimitPreviewReason(reason) || reason.includes("Preview temporarily unavailable")) {
         return "Preview temporarily unavailable";
+    }
+    if (reason.includes(RANGE_ODDS_UNAVAILABLE_MESSAGE)) {
+        return RANGE_ODDS_UNAVAILABLE_MESSAGE;
     }
     return reason;
 }
@@ -604,6 +648,81 @@ async function previewCandidate({
     };
 }
 
+async function previewDynamicRangeCandidate({
+    address,
+    markets,
+    budget,
+}: {
+    address: string;
+    markets: RangeMarket[];
+    budget: bigint;
+}): Promise<
+    | {
+          ok: true;
+          candidate: SelectedRangeCandidate;
+          failureReason: string | null;
+          probabilityBps: bigint;
+      }
+    | { ok: false; reason: string }
+> {
+    const previews = await Promise.all(
+        markets.map((market) => previewCandidate({ address, market, budget })),
+    );
+    const completeCandidates = previews.filter(
+        (preview): preview is Extract<Awaited<ReturnType<typeof previewCandidate>>, { ok: true }> =>
+            preview.ok && Boolean(preview.rangePreview) && Boolean(preview.breakPreview),
+    );
+    const widthSelection = selectRangeWidthQuote(
+        completeCandidates.map((preview) => {
+            const rangePreview = preview.rangePreview;
+            if (!rangePreview) {
+                throw new Error("Range preview is missing");
+            }
+            return {
+                widthTicks: preview.market.widthTicks,
+                quantity: rangePreview.quantity,
+                mintCost: rangePreview.mintCost,
+            };
+        }),
+    );
+    if (!widthSelection) {
+        const failureReasons = previews
+            .map((preview) => (preview.ok ? preview.failureReason : preview.reason))
+            .filter((reason): reason is string => Boolean(reason));
+        return {
+            ok: false,
+            reason:
+                failureReasons.find(isRateLimitPreviewReason) ??
+                userFacingPreviewReason(
+                    failureReasons.join("; ") || RANGE_ODDS_UNAVAILABLE_MESSAGE,
+                ),
+        };
+    }
+    const selected = completeCandidates.find(
+        (preview) => preview.market.widthTicks === widthSelection.widthTicks,
+    );
+    if (!selected?.rangePreview || !selected.breakPreview) {
+        return { ok: false, reason: RANGE_ODDS_UNAVAILABLE_MESSAGE };
+    }
+    const partialFailureReason = previews
+        .filter((preview) => !preview.ok || preview.failureReason)
+        .map((preview) => (preview.ok ? preview.failureReason : preview.reason))
+        .filter((reason): reason is string => Boolean(reason))
+        .join("; ");
+    return {
+        ok: true,
+        candidate: {
+            market: selected.market,
+            rangePreview: selected.rangePreview,
+            rangePreviewKey: selected.rangePreviewKey,
+            breakPreview: selected.breakPreview,
+            breakPreviewKey: selected.breakPreviewKey,
+        },
+        failureReason: partialFailureReason ? userFacingPreviewReason(partialFailureReason) : null,
+        probabilityBps: rangeProbabilityBps(selected.rangePreview),
+    };
+}
+
 function readBinaryMintEvents(events: unknown[]): MintedPositionEvent[] {
     const minted: MintedPositionEvent[] = [];
     for (const event of events) {
@@ -720,7 +839,7 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
             }),
         [binaryStrikeRaw, currentOracleExpiryMs, currentOracleId, minStrikeRaw, tickSizeRaw],
     );
-    const fixedMarket = useMemo(() => rangeMarketFromBase(baseMarket), [baseMarket]);
+    const rangeMarkets = useMemo(() => rangeMarketsFromBase(baseMarket), [baseMarket]);
     const previewRequestRef = useRef(0);
     const inFlightDisplayPreviewKeyRef = useRef<string | null>(null);
     const lastSuccessfulDisplayPreviewKeyRef = useRef<string | null>(null);
@@ -759,8 +878,13 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
         budget = null;
     }
     const displayPreviewKey =
-        address && fixedMarket && budget !== null && budget > 0n
-            ? buildDisplayPreviewKey({ address, market: fixedMarket, budget })
+        address && baseMarket && rangeMarkets.length > 0 && budget !== null && budget > 0n
+            ? buildCandidateSetPreviewKey({
+                  address,
+                  base: baseMarket,
+                  markets: rangeMarkets,
+                  budget,
+              })
             : null;
     const selectedCandidate = previewState.selected;
     const selectedCandidateDisplayPreviewKey =
@@ -821,7 +945,7 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
             round.openingSpotRaw,
             round.binaryStrikeRaw,
             round.tickSizeRaw,
-            fixedMarket?.widthTicks.toString() ?? "none",
+            rangeMarkets.map((market) => market.widthTicks.toString()).join(",") || "none",
         ].join(":");
         if (rangeSelectionDebugKeyRef.current === debugKey) {
             return;
@@ -835,21 +959,21 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
             referenceStrikeRaw: round.binaryStrikeRaw,
             minStrikeRaw: round.minStrikeRaw,
             tickSizeRaw: round.tickSizeRaw,
-            fixedWidthTicks: FIXED_RANGE_WIDTH_TICKS.toString(),
-            fixedMarket: fixedMarket
+            candidateWidthTicks: rangeMarkets.map((market) => market.widthTicks.toString()),
+            firstCandidate: rangeMarkets[0]
                 ? {
-                      widthTicks: fixedMarket.widthTicks.toString(),
-                      lowerStrikeRaw: fixedMarket.lowerStrike.toString(),
-                      higherStrikeRaw: fixedMarket.higherStrike.toString(),
-                      lowerDisplay: formatRawPrice(fixedMarket.lowerStrike),
-                      higherDisplay: formatRawPrice(fixedMarket.higherStrike),
+                      widthTicks: rangeMarkets[0].widthTicks.toString(),
+                      lowerStrikeRaw: rangeMarkets[0].lowerStrike.toString(),
+                      higherStrikeRaw: rangeMarkets[0].higherStrike.toString(),
+                      lowerDisplay: formatRawPrice(rangeMarkets[0].lowerStrike),
+                      higherDisplay: formatRawPrice(rangeMarkets[0].higherStrike),
                       rangeWidthDisplay: formatRawPriceDelta(
-                          fixedMarket.higherStrike - fixedMarket.lowerStrike,
+                          rangeMarkets[0].higherStrike - rangeMarkets[0].lowerStrike,
                       ),
                   }
                 : null,
         });
-    }, [baseMarket, fixedMarket, roundMarket]);
+    }, [baseMarket, rangeMarkets, roundMarket]);
 
     useEffect(() => {
         const logPreviewDecision = (payload: Record<string, unknown>) => {
@@ -857,14 +981,21 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                 console.info("Range display preview decision", payload);
             }
         };
-        if (!address || !isTestnet || !fixedMarket || budget === null || budget <= 0n) {
+        if (
+            !address ||
+            !isTestnet ||
+            !baseMarket ||
+            rangeMarkets.length === 0 ||
+            budget === null ||
+            budget <= 0n
+        ) {
             previewRequestRef.current += 1;
             const clearReason = !address
                 ? "wallet address missing"
                 : !isTestnet
                   ? "network mismatch"
-                  : !fixedMarket
-                    ? "fixed market unavailable"
+                  : !baseMarket || rangeMarkets.length === 0
+                    ? "range market unavailable"
                     : "invalid amount";
             logPreviewDecision({
                 displayPreviewKey,
@@ -952,18 +1083,24 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
         }));
         void (async () => {
             try {
-                const preview = await previewCandidate({ address, market: fixedMarket, budget });
+                const preview = await previewDynamicRangeCandidate({
+                    address,
+                    markets: rangeMarkets,
+                    budget,
+                });
                 if (previewRequestRef.current !== requestId) {
                     return;
                 }
                 if (process.env.NODE_ENV !== "production") {
-                    const market = preview.market;
+                    const market = preview.ok ? preview.candidate.market : rangeMarkets[0];
+                    const previewFailureReason = preview.ok ? null : preview.reason;
                     console.info(
-                        preview.ok ? "Range fixed preview" : "Range fixed preview failed",
-                        preview.ok
+                        preview.ok ? "Range dynamic preview" : "Range dynamic preview failed",
+                        preview.ok && market
                             ? {
                                   displayPreviewKey,
-                                  fixedWidthTicks: FIXED_RANGE_WIDTH_TICKS.toString(),
+                                  selectedWidthTicks: market.widthTicks.toString(),
+                                  probabilityBps: preview.probabilityBps.toString(),
                                   lowerStrikeRaw: market.lowerStrike.toString(),
                                   higherStrikeRaw: market.higherStrike.toString(),
                                   lowerDisplay: formatRawPrice(market.lowerStrike),
@@ -971,34 +1108,38 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                                   rangeWidthDisplay: formatRawPriceDelta(
                                       market.higherStrike - market.lowerStrike,
                                   ),
-                                  rangeMintCost: preview.rangePreview?.mintCost.toString() ?? null,
-                                  rangeQuantity: preview.rangePreview?.quantity.toString() ?? null,
-                                  rangeOdds: preview.rangePreview?.liveOdds ?? null,
+                                  rangeMintCost:
+                                      preview.candidate.rangePreview?.mintCost.toString() ?? null,
+                                  rangeQuantity:
+                                      preview.candidate.rangePreview?.quantity.toString() ?? null,
+                                  rangeOdds: preview.candidate.rangePreview?.liveOdds ?? null,
                                   breakLowerMintCost:
-                                      preview.breakPreview?.lowerLeg.mintCost.toString() ?? null,
+                                      preview.candidate.breakPreview?.lowerLeg.mintCost.toString() ??
+                                      null,
                                   breakLowerQuantity:
-                                      preview.breakPreview?.lowerLeg.quantity.toString() ?? null,
+                                      preview.candidate.breakPreview?.lowerLeg.quantity.toString() ??
+                                      null,
                                   breakUpperMintCost:
-                                      preview.breakPreview?.upperLeg.mintCost.toString() ?? null,
+                                      preview.candidate.breakPreview?.upperLeg.mintCost.toString() ??
+                                      null,
                                   breakUpperQuantity:
-                                      preview.breakPreview?.upperLeg.quantity.toString() ?? null,
+                                      preview.candidate.breakPreview?.upperLeg.quantity.toString() ??
+                                      null,
                                   breakEffectivePayout:
-                                      preview.breakPreview?.effectivePayout.toString() ?? null,
-                                  breakTotalCost: preview.breakPreview?.mintCost.toString() ?? null,
-                                  breakEffectiveOdds: preview.breakPreview?.liveOdds ?? null,
+                                      preview.candidate.breakPreview?.effectivePayout.toString() ??
+                                      null,
+                                  breakTotalCost:
+                                      preview.candidate.breakPreview?.mintCost.toString() ?? null,
+                                  breakEffectiveOdds:
+                                      preview.candidate.breakPreview?.liveOdds ?? null,
                                   partialFailureReason: preview.failureReason,
                               }
                             : {
                                   displayPreviewKey,
-                                  fixedWidthTicks: FIXED_RANGE_WIDTH_TICKS.toString(),
-                                  lowerStrikeRaw: market.lowerStrike.toString(),
-                                  higherStrikeRaw: market.higherStrike.toString(),
-                                  lowerDisplay: formatRawPrice(market.lowerStrike),
-                                  higherDisplay: formatRawPrice(market.higherStrike),
-                                  rangeWidthDisplay: formatRawPriceDelta(
-                                      market.higherStrike - market.lowerStrike,
+                                  candidateWidthTicks: rangeMarkets.map((candidate) =>
+                                      candidate.widthTicks.toString(),
                                   ),
-                                  failureReason: preview.reason,
+                                  failureReason: previewFailureReason,
                               },
                     );
                 }
@@ -1014,7 +1155,7 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                         selected: current.selected,
                         error: isRateLimitPreviewReason(preview.reason)
                             ? "Preview temporarily unavailable"
-                            : preview.reason,
+                            : userFacingPreviewReason(preview.reason),
                     }));
                     return;
                 }
@@ -1045,20 +1186,20 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                     return {
                         status: "READY",
                         selected: {
-                            ...preview,
+                            ...preview.candidate,
                             rangePreview:
-                                preview.rangePreview ??
+                                preview.candidate.rangePreview ??
                                 (canReuseCurrent ? (current.selected?.rangePreview ?? null) : null),
                             rangePreviewKey:
-                                preview.rangePreviewKey ??
+                                preview.candidate.rangePreviewKey ??
                                 (canReuseCurrent
                                     ? (current.selected?.rangePreviewKey ?? null)
                                     : null),
                             breakPreview:
-                                preview.breakPreview ??
+                                preview.candidate.breakPreview ??
                                 (canReuseCurrent ? (current.selected?.breakPreview ?? null) : null),
                             breakPreviewKey:
-                                preview.breakPreviewKey ??
+                                preview.candidate.breakPreviewKey ??
                                 (canReuseCurrent
                                     ? (current.selected?.breakPreviewKey ?? null)
                                     : null),
@@ -1089,9 +1230,10 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
         address,
         budget,
         displayPreviewKey,
-        fixedMarket,
+        baseMarket,
         isBettingOpen,
         isTestnet,
+        rangeMarkets,
         selectedCandidateDisplayPreviewKey,
     ]);
 
@@ -1413,9 +1555,9 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
             ? `${formatRawPrice(selectedCandidate.market.lowerStrike)} - ${formatRawPrice(
                   selectedCandidate.market.higherStrike,
               )}`
-            : fixedMarket
-              ? `${formatRawPrice(fixedMarket.lowerStrike)} - ${formatRawPrice(
-                    fixedMarket.higherStrike,
+            : rangeMarkets[0]
+              ? `${formatRawPrice(rangeMarkets[0].lowerStrike)} - ${formatRawPrice(
+                    rangeMarkets[0].higherStrike,
                 )}`
               : "--",
         rangeOdds: selectedCandidate?.rangePreview
