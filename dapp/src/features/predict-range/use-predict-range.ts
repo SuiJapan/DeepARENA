@@ -648,12 +648,46 @@ async function previewCandidate({
     };
 }
 
+async function fetchServerWidthSelect({
+    address,
+    baseMarket,
+}: {
+    address: string;
+    baseMarket: RangeBaseMarket;
+}): Promise<{ selectedWidthTicks: bigint } | null> {
+    try {
+        const response = await fetch("/api/predict/range-width", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+                walletAddress: address,
+                oracleId: baseMarket.oracleId,
+                expiryMs: baseMarket.expiryMs.toString(),
+                referenceStrikeRaw: baseMarket.referenceStrike.toString(),
+                tickSizeRaw: baseMarket.tickSize.toString(),
+                predictObjectId: PREDICT_BINARY_CONFIG.predictObjectId,
+                quoteCoinType: PREDICT_BINARY_CONFIG.quoteCoinType,
+            }),
+        });
+        if (!response.ok) return null;
+        const body = (await response.json()) as unknown;
+        if (!isRecord(body) || !body.ok || typeof body.selectedWidthTicks !== "string") {
+            return null;
+        }
+        return { selectedWidthTicks: BigInt(body.selectedWidthTicks) };
+    } catch {
+        return null;
+    }
+}
+
 async function previewDynamicRangeCandidate({
     address,
+    baseMarket,
     markets,
     budget,
 }: {
     address: string;
+    baseMarket: RangeBaseMarket;
     markets: RangeMarket[];
     budget: bigint;
 }): Promise<
@@ -665,6 +699,30 @@ async function previewDynamicRangeCandidate({
       }
     | { ok: false; reason: string }
 > {
+    // Server-side selection ensures all users see the same width within a round
+    const serverWidth = await fetchServerWidthSelect({ address, baseMarket });
+    const serverMarket = serverWidth
+        ? (markets.find((m) => m.widthTicks === serverWidth.selectedWidthTicks) ?? null)
+        : null;
+    if (serverMarket) {
+        const serverPreview = await previewCandidate({ address, market: serverMarket, budget });
+        if (serverPreview.ok && serverPreview.rangePreview && serverPreview.breakPreview) {
+            return {
+                ok: true,
+                candidate: {
+                    market: serverMarket,
+                    rangePreview: serverPreview.rangePreview,
+                    rangePreviewKey: serverPreview.rangePreviewKey,
+                    breakPreview: serverPreview.breakPreview,
+                    breakPreviewKey: serverPreview.breakPreviewKey,
+                },
+                failureReason: serverPreview.failureReason ?? null,
+                probabilityBps: rangeProbabilityBps(serverPreview.rangePreview),
+            };
+        }
+        // Server-selected width preview failed — fall through to full multi-probe
+    }
+
     const previews = await Promise.all(
         markets.map((market) => previewCandidate({ address, market, budget })),
     );
@@ -1085,6 +1143,7 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
             try {
                 const preview = await previewDynamicRangeCandidate({
                     address,
+                    baseMarket,
                     markets: rangeMarkets,
                     budget,
                 });
