@@ -41,35 +41,28 @@ export function WalletStatus() {
 
     return (
         <div className="wallet-status">
-            <div className="wallet-status-main">
+            {isConnected || isReconnecting ? (
+                <div className="wallet-status-main">
+                    <strong title={connection.account.address}>
+                        {shortAddress(connection.account.address)}
+                    </strong>
+                    <small>{formatNetwork(network)}</small>
+                    {isWrongNetwork ? (
+                        <span className="wallet-state" data-status="wrong-network">
+                            Wrong network
+                        </span>
+                    ) : null}
+                </div>
+            ) : null}
+            <div className="wallet-status-actions">
                 {isConnected || isReconnecting ? (
-                    <>
-                        <span
-                            className="wallet-state"
-                            data-status={isWrongNetwork ? "wrong-network" : "connected"}
-                        >
-                            {isWrongNetwork ? "Wrong network" : "Connected"}
-                        </span>
-                        <strong>{shortAddress(connection.account.address)}</strong>
-                        <small>Network: {formatNetwork(network)}</small>
-                    </>
+                    <button type="button" className="wallet-disconnect-button" onClick={disconnect}>
+                        Disconnect
+                    </button>
                 ) : (
-                    <>
-                        <span className="wallet-state" data-status={connection.status}>
-                            Wallet not connected
-                        </span>
-                        <ConnectButton>Connect Wallet</ConnectButton>
-                    </>
+                    <ConnectButton>Connect Wallet</ConnectButton>
                 )}
             </div>
-            {isConnected || isReconnecting ? (
-                <button type="button" className="wallet-disconnect-button" onClick={disconnect}>
-                    Disconnect
-                </button>
-            ) : null}
-            {isWrongNetwork ? (
-                <p className="wallet-warning">Please switch your wallet to Sui Testnet</p>
-            ) : null}
             {disconnectError ? <p className="wallet-warning">{disconnectError}</p> : null}
         </div>
     );

@@ -10,6 +10,8 @@ const percentFormatter = new Intl.NumberFormat("en-US", {
     signDisplay: "always",
 });
 
+const marketLabel = "SUI / DUSDC";
+
 const timeFormatter = new Intl.DateTimeFormat(undefined, {
     hour: "2-digit",
     minute: "2-digit",
@@ -68,13 +70,21 @@ export function MarketChart({
         ? timeFormatter.format(new Date(latestTick.onchainTimestampMs))
         : "Waiting";
     const statusMessage = message ?? oracleId ?? marketConfig.sourceLabel;
+    const axisPoints =
+        history.length > 0
+            ? [
+                  { slot: "start", point: history[0] },
+                  { slot: "middle", point: history[Math.floor(history.length / 2)] },
+                  { slot: "end", point: history.at(-1) },
+              ]
+            : [];
 
     return (
         <section className="surface market-chart">
             <div className="section-title">
                 <div>
                     <span>Market view</span>
-                    <h2>{marketConfig.displaySymbol}</h2>
+                    <h2>{marketLabel}</h2>
                     <small>{marketConfig.sourceLabel}</small>
                 </div>
                 <div className="market-quote" data-direction={changeDirection}>
@@ -111,7 +121,7 @@ export function MarketChart({
                         {status === "ERROR" ? statusMessage : "Collecting oracle ticks..."}
                     </div>
                 ) : null}
-                <svg viewBox="0 0 800 260" role="img" aria-label="Live BTC price chart">
+                <svg viewBox="0 0 800 260" role="img" aria-label="Live SUI price chart">
                     <defs>
                         <linearGradient id="chartFill" x1="0" x2="0" y1="0" y2="1">
                             <stop offset="0%" stopColor="#31a98b" stopOpacity="0.28" />
@@ -139,11 +149,10 @@ export function MarketChart({
                     ) : null}
                 </svg>
                 <div className="chart-axis">
-                    {(history.length > 0
-                        ? [history[0], history[Math.floor(history.length / 2)], history.at(-1)]
-                        : []
-                    ).map((point) => (
-                        <span key={`${point?.digest ?? "empty"}:${point?.onchainTimestampMs ?? 0}`}>
+                    {axisPoints.map(({ slot, point }) => (
+                        <span
+                            key={`${slot}:${point?.digest ?? "empty"}:${point?.onchainTimestampMs ?? 0}`}
+                        >
                             {point
                                 ? timeFormatter.format(new Date(point.onchainTimestampMs))
                                 : "--"}
