@@ -533,6 +533,14 @@ button:disabled {
     color: var(--coral);
 }
 
+.binary-position-chip.position-range strong {
+    color: var(--blue);
+}
+
+.binary-position-chip.position-break strong {
+    color: var(--amber);
+}
+
 .binary-position-chip.position-empty {
     visibility: hidden;
 }

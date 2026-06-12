@@ -202,6 +202,32 @@ function NextRangeRoundCard({ roundMarket }: { roundMarket: PredictRoundMarket |
                     <span>BREAK</span>
                     <strong>{range.breakOdds}</strong>
                 </button>
+                {range.activePositionDirection ? (
+                    <>
+                        {range.activePositionDirection === "RANGE" ? (
+                            <div className="binary-position-chip position-range">
+                                <span>YOUR BET</span>
+                                <strong>{range.activePositionCostLabel}</strong>
+                                {range.activePositionEntryOdds ? (
+                                    <em>Entry {range.activePositionEntryOdds}</em>
+                                ) : null}
+                            </div>
+                        ) : (
+                            <div className="binary-position-chip position-empty" aria-hidden />
+                        )}
+                        {range.activePositionDirection === "BREAK" ? (
+                            <div className="binary-position-chip position-break">
+                                <span>YOUR BET</span>
+                                <strong>{range.activePositionCostLabel}</strong>
+                                {range.activePositionEntryOdds ? (
+                                    <em>Entry {range.activePositionEntryOdds}</em>
+                                ) : null}
+                            </div>
+                        ) : (
+                            <div className="binary-position-chip position-empty" aria-hidden />
+                        )}
+                    </>
+                ) : null}
             </fieldset>
             <label className="binary-amount">
                 <span>Amount</span>
@@ -226,12 +252,19 @@ function NextRangeRoundCard({ roundMarket }: { roundMarket: PredictRoundMarket |
                 Enter Range
             </button>
             <div className="binary-entry-status" aria-live="polite">
-                {range.txStatus === "PLACED" &&
-                range.entryDirection &&
-                range.entryOdds &&
-                range.entryCost
-                    ? `${range.entryDirection} PLACED · ${range.entryCost} · Entry ${range.entryOdds}`
-                    : statusMessage}
+                {range.activePositionDirection && range.activePositionCostLabel ? (
+                    <>
+                        <span>YOUR PICK {range.activePositionDirection}</span>
+                        <span>BET {range.activePositionCostLabel}</span>
+                        {range.activePositionEntryOdds ? (
+                            <span>ENTRY ODDS {range.activePositionEntryOdds}</span>
+                        ) : null}
+                    </>
+                ) : range.txStatus === "FAILED" ? (
+                    <span>{range.message}</span>
+                ) : (
+                    statusMessage
+                )}
             </div>
         </section>
     );

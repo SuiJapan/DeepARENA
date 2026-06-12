@@ -48,6 +48,10 @@ export type RangeDirection = "RANGE" | "BREAK";
 export type RangePreviewStatus = "IDLE" | "PREVIEWING" | "READY" | "ERROR";
 export type RangeTxStatus = "READY" | "CONFIRM IN WALLET" | "SUBMITTING" | "PLACED" | "FAILED";
 
+// Center tracks live spot price instead of fixed binaryStrikeRaw, keeping BREAK symmetric.
+// Snap to nearest 10 ticks to reduce preview-key churn when price ticks rapidly.
+const SPOT_SNAP_TICKS = 10n;
+
 interface RangeMarket {
     oracleId: string;
     expiryMs: number;
@@ -196,9 +200,24 @@ function rangeBaseMarketFromRound(roundMarket: PredictRoundMarket | null): Range
         return null;
     }
     const tickSize = BigInt(round.tickSizeRaw);
-    const center = BigInt(round.binaryStrikeRaw);
     const minStrike = BigInt(round.minStrikeRaw);
-    if (tickSize <= 0n || center <= tickSize || minStrike <= 0n) {
+    const maxStrike = minStrike + tickSize * GRID_TICKS;
+    if (tickSize <= 0n || minStrike <= 0n) {
+        return null;
+    }
+    let center: bigint;
+    if (currentOracle.spotRaw) {
+        // Snap live spot to nearest SPOT_SNAP_TICKS on the strike grid so that BREAK
+        // legs remain symmetric around current price (instead of fixed binaryStrikeRaw).
+        const spot = BigInt(currentOracle.spotRaw);
+        const snapUnit = tickSize * SPOT_SNAP_TICKS;
+        const offset = spot > minStrike ? spot - minStrike : 0n;
+        const snapped = minStrike + ((offset + snapUnit / 2n) / snapUnit) * snapUnit;
+        center = snapped < minStrike ? minStrike : snapped > maxStrike ? maxStrike : snapped;
+    } else {
+        center = BigInt(round.binaryStrikeRaw);
+    }
+    if (center <= tickSize) {
         return null;
     }
     return {
@@ -206,7 +225,7 @@ function rangeBaseMarketFromRound(roundMarket: PredictRoundMarket | null): Range
         expiryMs: currentOracle.expiryMs,
         referenceStrike: center,
         minStrike,
-        maxStrike: minStrike + tickSize * GRID_TICKS,
+        maxStrike,
         tickSize,
         oracleTimestampMs: currentOracle.timestampMs,
     };
@@ -852,6 +871,7 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
     const isTestnet = network === PREDICT_BINARY_CONFIG.network;
     const currentOracleId = roundMarket?.currentOracle?.oracleId ?? null;
     const currentOracleExpiryMs = roundMarket?.currentOracle?.expiryMs ?? null;
+    const currentOracleSpotRaw = roundMarket?.currentOracle?.spotRaw ?? null;
     const binaryStrikeRaw = roundMarket?.round?.binaryStrikeRaw ?? null;
     const minStrikeRaw = roundMarket?.round?.minStrikeRaw ?? null;
     const tickSizeRaw = roundMarket?.round?.tickSizeRaw ?? null;
@@ -865,7 +885,7 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                               oracleId: currentOracleId,
                               expiryMs: currentOracleExpiryMs,
                               lifecycle: "",
-                              spotRaw: null,
+                              spotRaw: currentOracleSpotRaw,
                               forwardRaw: null,
                               timestampMs: null,
                               minStrikeRaw: null,
@@ -895,7 +915,14 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                           }
                         : null,
             }),
-        [binaryStrikeRaw, currentOracleExpiryMs, currentOracleId, minStrikeRaw, tickSizeRaw],
+        [
+            binaryStrikeRaw,
+            currentOracleExpiryMs,
+            currentOracleId,
+            currentOracleSpotRaw,
+            minStrikeRaw,
+            tickSizeRaw,
+        ],
     );
     const rangeMarkets = useMemo(() => rangeMarketsFromBase(baseMarket), [baseMarket]);
     const previewRequestRef = useRef(0);
@@ -913,6 +940,11 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
         cost: bigint;
         entryOdds: string;
     } | null>(null);
+    const [activePosition, setActivePosition] = useState<{
+        direction: RangeDirection;
+        cost: bigint;
+        entryOdds: string | null;
+    } | null>(null);
     const [hasJoinedArena, setHasJoinedArena] = useState(false);
 
     // ウォレット接続時にオンチェーンで参加済みか確認し、不要な join TX を防ぐ
@@ -925,6 +957,61 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
             if (joined) setHasJoinedArena(true);
         });
     }, [address, isTestnet]);
+
+    // ポートフォリオから現在ラウンドのアクティブ RANGE/BREAK ポジションを復元する
+    const fetchActivePosition = useCallback(async () => {
+        if (!address || !baseMarket) {
+            setActivePosition(null);
+            return;
+        }
+        try {
+            const response = await fetch("/api/predict/portfolio", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ walletAddress: address }),
+            });
+            if (!response.ok) return;
+            const data = (await response.json()) as {
+                minted: Array<{ oracleId: string; expiryMs: number; strike: string; cost: string }>;
+                rangeMinted: Array<{
+                    oracleId: string;
+                    expiryMs: number;
+                    cost: string;
+                    quantity: string;
+                }>;
+            };
+            const rangeForRound = (data.rangeMinted ?? []).filter(
+                (e) => e.oracleId === baseMarket.oracleId && e.expiryMs === baseMarket.expiryMs,
+            );
+            if (rangeForRound.length > 0) {
+                const cost = rangeForRound.reduce((sum, e) => sum + BigInt(e.cost), 0n);
+                const first = rangeForRound[0];
+                const entryOdds = first
+                    ? formatBinaryOddsFromQuantity(BigInt(first.quantity), BigInt(first.cost))
+                    : null;
+                setActivePosition({ direction: "RANGE", cost, entryOdds });
+                return;
+            }
+            const breakForRound = (data.minted ?? []).filter(
+                (e) =>
+                    e.oracleId === baseMarket.oracleId &&
+                    e.expiryMs === baseMarket.expiryMs &&
+                    BigInt(e.strike) !== baseMarket.referenceStrike,
+            );
+            if (breakForRound.length > 0) {
+                const cost = breakForRound.reduce((sum, e) => sum + BigInt(e.cost), 0n);
+                setActivePosition({ direction: "BREAK", cost, entryOdds: null });
+                return;
+            }
+            setActivePosition(null);
+        } catch {
+            // best-effort: エラー時は更新しない
+        }
+    }, [address, baseMarket]);
+
+    useEffect(() => {
+        void fetchActivePosition();
+    }, [fetchActivePosition]);
 
     const isBusy = txStatus === "CONFIRM IN WALLET" || txStatus === "SUBMITTING";
     const isBettingOpen = roundMarket?.state === "BETTING_OPEN";
@@ -1539,6 +1626,11 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                     cost: mint.cost,
                     entryOdds: formatBinaryOddsFromQuantity(mint.quantity, mint.cost),
                 });
+                setActivePosition({
+                    direction: "RANGE",
+                    cost: mint.cost,
+                    entryOdds: formatBinaryOddsFromQuantity(mint.quantity, mint.cost),
+                });
             } else {
                 const { lower, upper } = findBreakMintLegs({
                     events,
@@ -1576,6 +1668,11 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                 const effectivePayout =
                     lower.quantity < upper.quantity ? lower.quantity : upper.quantity;
                 setLastBet({
+                    direction: "BREAK",
+                    cost,
+                    entryOdds: formatBinaryOddsFromQuantity(effectivePayout, cost),
+                });
+                setActivePosition({
                     direction: "BREAK",
                     cost,
                     entryOdds: formatBinaryOddsFromQuantity(effectivePayout, cost),
@@ -1651,6 +1748,11 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
         entryCost: lastBet
             ? `${formatTokenAmount(lastBet.cost, PREDICT_BINARY_CONFIG.quoteDecimals)} DUSDC`
             : null,
+        activePositionDirection: activePosition?.direction ?? null,
+        activePositionCostLabel: activePosition
+            ? `${formatTokenAmount(activePosition.cost, PREDICT_BINARY_CONFIG.quoteDecimals)} DUSDC`
+            : null,
+        activePositionEntryOdds: activePosition?.entryOdds ?? null,
         unavailableReason: previewState.error,
         disabledReason,
         displayDebug: {
