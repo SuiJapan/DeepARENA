@@ -1,0 +1,14 @@
+{
+    "$schema": "node_modules/wrangler/config-schema.json",
+    "name": "deeparena-dapp",
+    "main": ".open-next/worker.js",
+    "compatibility_date": "2026-06-13",
+    "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+    "assets": {
+        "directory": ".open-next/assets",
+        "binding": "ASSETS"
+    },
+    "build": {
+        "command": "npx opennextjs-cloudflare build"
+    }
+}
