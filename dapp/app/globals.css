@@ -505,6 +505,51 @@ button:disabled {
     border-color: var(--coral);
 }
 
+.binary-position-chip {
+    display: grid;
+    gap: 2px;
+    min-height: 38px;
+    padding: 7px 9px;
+    background: white;
+    border: 1px solid var(--line);
+    font-size: 8px;
+    line-height: 1.25;
+}
+
+.binary-position-chip span,
+.binary-position-chip em {
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-style: normal;
+    text-transform: uppercase;
+}
+
+.binary-position-chip strong {
+    font-family: var(--font-mono);
+    font-size: 10px;
+}
+
+.binary-position-chip.position-up strong {
+    color: var(--green);
+}
+
+.binary-position-chip.position-down strong {
+    color: var(--coral);
+}
+
+.binary-position-chip.position-range strong {
+    color: var(--blue);
+}
+
+.binary-position-chip.position-break strong {
+    color: var(--amber);
+}
+
+.binary-position-chip.position-empty {
+    visibility: hidden;
+}
+
+
 .binary-amount {
     display: grid;
     gap: 6px;

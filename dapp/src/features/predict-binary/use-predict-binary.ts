@@ -26,10 +26,15 @@ import {
     readMintEvent,
     readRedeemEvent,
     readWalletQuoteBalance,
+    saveCachedManagerId,
 } from "@/src/lib/predict-binary/client";
 import { PREDICT_BINARY_CONFIG, predictBinaryExplorerUrl } from "@/src/lib/predict-binary/config";
 import { readSuiEventPayloads } from "@/src/lib/predict-binary/events";
 import { formatBinaryOddsFromQuantity } from "@/src/lib/predict-binary/odds";
+import {
+    buildBinaryPreviewCacheKey,
+    buildBinaryPreviewRequestKey,
+} from "@/src/lib/predict-binary/preview-key";
 import {
     calcFee,
     calcMaxTotalCost,
@@ -279,6 +284,8 @@ interface BinaryPreviewApiResponse {
     down: BinaryPreviewSideResponse;
 }
 
+type PreviewCachePolicy = "read-through" | "bypass";
+
 interface ParsedBinaryPreviewSide {
     ok: boolean;
     preview: BudgetedTradePreview | null;
@@ -308,19 +315,16 @@ function previewFromApiSide(result: BinaryPreviewSideResponse): ParsedBinaryPrev
 function buildPreviewApiKey({
     market,
     budget,
-    oracleTimestampMs,
 }: {
     market: BtcBinaryMarket;
     budget: bigint;
-    oracleTimestampMs: number | null;
 }): string {
-    return [
-        market.oracleId,
-        market.expiryMs.toString(),
-        market.strike.toString(),
-        String(oracleTimestampMs ?? 0),
-        budget.toString(),
-    ].join(":");
+    return buildBinaryPreviewCacheKey({
+        oracleId: market.oracleId,
+        expiryMs: market.expiryMs,
+        referenceStrikeRaw: market.strike,
+        betAmountAtomic: budget,
+    });
 }
 
 function getBetAvailability({
@@ -355,7 +359,12 @@ function getBetAvailability({
     if (!hasPositiveAmount) {
         return { ...base, canBet: false, reason: "Enter an amount." };
     }
-    if (!state.preview || state.status === "ERROR" || state.status === "UNAVAILABLE") {
+    if (
+        !state.preview ||
+        !previewOk ||
+        state.status === "ERROR" ||
+        state.status === "UNAVAILABLE"
+    ) {
         return {
             ...base,
             canBet: false,
@@ -376,11 +385,13 @@ async function previewBinaryOddsViaApi({
     market,
     budget,
     oracleTimestampMs,
+    cachePolicy = "read-through",
 }: {
     address: string;
     market: BtcBinaryMarket;
     budget: bigint;
     oracleTimestampMs: number | null;
+    cachePolicy?: PreviewCachePolicy;
 }): Promise<{
     previewKey: string;
     cacheHit: boolean;
@@ -399,6 +410,7 @@ async function previewBinaryOddsViaApi({
             oracleTimestampMs: String(oracleTimestampMs ?? 0),
             predictObjectId: PREDICT_BINARY_CONFIG.predictObjectId,
             quoteCoinType: PREDICT_BINARY_CONFIG.quoteCoinType,
+            cachePolicy,
         }),
     });
     const payload = (await response.json()) as unknown;
@@ -416,6 +428,9 @@ async function previewBinaryOddsViaApi({
         down: previewFromApiSide(result.down),
     };
 }
+
+const PREVIEW_DEBOUNCE_MS = 750;
+const PREVIEW_POLL_INTERVAL_MS = 5_000;
 
 function createMarketFromRound(roundMarket: PredictRoundMarket | null): BtcBinaryMarket | null {
     if (!roundMarket?.currentOracle || !roundMarket.round) {
@@ -441,6 +456,10 @@ export function usePredictBinary(
     const sidePositionRestoreRef = useRef(0);
     const loggedPreviewErrorsRef = useRef<Set<string>>(new Set());
     const previewKeyRef = useRef<string | null>(null);
+    const previewContextRef = useRef<{
+        oracleTimestampMs: number | null;
+        spotTimestampMs: number | null;
+    }>({ oracleTimestampMs: null, spotTimestampMs: null });
     const hasSuccessfulPreviewRef = useRef(false);
     const [amount, setAmount] = useState("10");
     const [txStatus, setTxStatus] = useState<BinaryTxStatus>("READY");
@@ -490,14 +509,26 @@ export function usePredictBinary(
         });
     }, [address, isTestnet]);
 
+    // address 変化時のみ manager ID を取得してキャッシュ。15秒ごとの refresh() では呼ばない
+    useEffect(() => {
+        if (!address || !isTestnet) {
+            setManagerId(null);
+            return;
+        }
+        void findPredictManager(address).then(setManagerId);
+    }, [address, isTestnet]);
+
     const isBusy = txStatus === "CONFIRM IN WALLET" || txStatus === "SUBMITTING";
     const isBettingOpen = roundMarket?.state === "BETTING_OPEN";
     const oracleTimestampMs = roundMarket?.currentOracle?.timestampMs ?? null;
 
+    useEffect(() => {
+        previewContextRef.current = { oracleTimestampMs, spotTimestampMs };
+    }, [oracleTimestampMs, spotTimestampMs]);
+
     const refresh = useCallback(async () => {
         if (!address || !isTestnet) {
             setMarket(null);
-            setManagerId(null);
             setPosition(null);
             setSidePositions(emptySidePositions());
             setMessage(
@@ -515,22 +546,10 @@ export function usePredictBinary(
         }
 
         try {
-            const [nextWalletBalance, foundManagerId] = await Promise.all([
-                readWalletQuoteBalance(client, address),
-                findPredictManager(address),
-            ]);
-            const nextMarket = { ...baseMarket };
-            setMarket(nextMarket);
+            const nextWalletBalance = await readWalletQuoteBalance(client, address);
+            setMarket({ ...baseMarket });
             setWalletBalance(nextWalletBalance);
-            setManagerId(foundManagerId);
-
-            if (foundManagerId) {
-                setManagerBalance(0n);
-            } else {
-                setManagerBalance(0n);
-                setPosition(null);
-                setSidePositions(emptySidePositions());
-            }
+            setManagerBalance(0n);
             if (!isBusy) {
                 setTxStatus("READY");
                 setMessage(isBettingOpen ? "BET NOW" : "BETTING CLOSED");
@@ -591,235 +610,262 @@ export function usePredictBinary(
         void restoreSidePositions(market);
     }, [address, isTestnet, market, restoreSidePositions]);
 
-    useEffect(() => {
-        previewRequestRef.current += 1;
-        const requestId = previewRequestRef.current;
-        const resetPreviews = (status: BinaryPreviewStatus) => {
-            setUpPreview({ status, preview: null, error: null, debug: null, previewKey: null });
-            setDownPreview({ status, preview: null, error: null, debug: null, previewKey: null });
-        };
+    const runBinaryPreview = useCallback(
+        async ({ force = false, silent = false }: { force?: boolean; silent?: boolean } = {}) => {
+            const resetPreviews = (status: BinaryPreviewStatus) => {
+                setUpPreview({ status, preview: null, error: null, debug: null, previewKey: null });
+                setDownPreview({
+                    status,
+                    preview: null,
+                    error: null,
+                    debug: null,
+                    previewKey: null,
+                });
+            };
 
-        if (!address || !isTestnet || !isBettingOpen) {
-            previewKeyRef.current = null;
-            setPreviewStatus("IDLE");
-            resetPreviews("IDLE");
-            return;
-        }
-        if (!market) {
-            previewKeyRef.current = null;
-            setPreviewStatus("UNAVAILABLE");
-            resetPreviews("UNAVAILABLE");
-            return;
-        }
+            if (!address || !isTestnet || !isBettingOpen) {
+                previewRequestRef.current += 1;
+                previewKeyRef.current = null;
+                setPreviewStatus("IDLE");
+                resetPreviews("IDLE");
+                return;
+            }
+            if (!market) {
+                previewRequestRef.current += 1;
+                previewKeyRef.current = null;
+                setPreviewStatus("UNAVAILABLE");
+                resetPreviews("UNAVAILABLE");
+                return;
+            }
 
-        let budget: bigint;
-        try {
-            budget = parseTokenAmount(amount, PREDICT_BINARY_CONFIG.quoteDecimals).atomic;
-        } catch {
-            setPreviewStatus(amount.trim().length === 0 ? "IDLE" : "UNAVAILABLE");
-            resetPreviews(amount.trim().length === 0 ? "IDLE" : "UNAVAILABLE");
-            return;
-        }
+            let budget: bigint;
+            try {
+                budget = parseTokenAmount(amount, PREDICT_BINARY_CONFIG.quoteDecimals).atomic;
+            } catch {
+                previewRequestRef.current += 1;
+                const status = amount.trim().length === 0 ? "IDLE" : "UNAVAILABLE";
+                setPreviewStatus(status);
+                resetPreviews(status);
+                return;
+            }
 
-        const previewKey = [
-            address,
-            market.oracleId,
-            market.expiryMs,
-            market.strike.toString(),
-            spotTimestampMs ?? "no-spot",
-            budget.toString(),
-        ].join(":");
-        if (previewKeyRef.current === previewKey) {
-            return;
-        }
-        previewKeyRef.current = previewKey;
+            const previewKey = buildBinaryPreviewRequestKey({
+                walletAddress: address,
+                oracleId: market.oracleId,
+                expiryMs: market.expiryMs,
+                referenceStrikeRaw: market.strike,
+                betAmountAtomic: budget,
+            });
+            if (!force && previewKeyRef.current === previewKey) {
+                return;
+            }
+            previewKeyRef.current = previewKey;
+            previewRequestRef.current += 1;
+            const requestId = previewRequestRef.current;
 
-        setPreviewStatus("PREVIEWING");
-        setUpPreview((current) => ({ ...current, status: "PREVIEWING" }));
-        setDownPreview((current) => ({ ...current, status: "PREVIEWING" }));
-        const timeoutId = window.setTimeout(() => {
-            void (async () => {
-                const warnPreviewFailure = ({
-                    direction,
-                    error,
-                    debug,
-                }: {
-                    direction: BinaryDirection;
-                    error: string;
-                    debug: BinaryPreviewDebug | null;
-                }) => {
-                    const logKey = `${previewKey}:${direction}:${error}:${debug?.reason ?? "request"}`;
-                    if (loggedPreviewErrorsRef.current.has(logKey)) {
-                        return;
-                    }
-                    loggedPreviewErrorsRef.current.add(logKey);
-                    console.warn("Binary odds preview unavailable", {
-                        side: direction,
-                        previewKey,
-                        ok: false,
-                        error,
-                        reason: debug?.reason ?? null,
-                        devInspectError: debug?.devInspectError ?? null,
-                        moveAbortCode: debug?.moveAbortCode ?? null,
-                        lastTriedQuantity: debug?.lastTriedQuantity ?? null,
-                        lastMintCost: debug?.lastMintCost ?? null,
-                        lastRedeemPayout: debug?.lastRedeemPayout ?? null,
-                        returnValuesRaw: debug?.returnValuesRaw ?? null,
-                    });
-                };
-                let result: Awaited<ReturnType<typeof previewBinaryOddsViaApi>>;
-                try {
-                    result = await previewBinaryOddsViaApi({
-                        address,
-                        market,
-                        budget,
-                        oracleTimestampMs,
-                    });
-                } catch (caught) {
-                    if (previewRequestRef.current !== requestId) {
-                        return;
-                    }
-                    const error = readErrorMessage(caught);
-                    setUpPreview((current) =>
-                        current.preview
-                            ? { ...current, status: "READY", error }
-                            : {
-                                  status: "ERROR",
-                                  preview: null,
-                                  error,
-                                  debug: null,
-                                  previewKey,
-                              },
-                    );
-                    setDownPreview((current) =>
-                        current.preview
-                            ? { ...current, status: "READY", error }
-                            : {
-                                  status: "ERROR",
-                                  preview: null,
-                                  error,
-                                  debug: null,
-                                  previewKey,
-                              },
-                    );
-                    setPreviewStatus(hasSuccessfulPreviewRef.current ? "READY" : "ERROR");
-                    warnPreviewFailure({ direction: "UP", error, debug: null });
-                    warnPreviewFailure({ direction: "DOWN", error, debug: null });
+            if (!silent) {
+                setPreviewStatus("PREVIEWING");
+                setUpPreview((current) => ({
+                    ...current,
+                    status: "PREVIEWING",
+                    error: null,
+                    previewKey: current.preview ? current.previewKey : previewKey,
+                }));
+                setDownPreview((current) => ({
+                    ...current,
+                    status: "PREVIEWING",
+                    error: null,
+                    previewKey: current.preview ? current.previewKey : previewKey,
+                }));
+            }
+
+            const warnPreviewFailure = ({
+                direction,
+                error,
+                debug,
+            }: {
+                direction: BinaryDirection;
+                error: string;
+                debug: BinaryPreviewDebug | null;
+            }) => {
+                const logKey = `${previewKey}:${direction}:${error}:${debug?.reason ?? "request"}`;
+                if (loggedPreviewErrorsRef.current.has(logKey)) {
                     return;
                 }
+                loggedPreviewErrorsRef.current.add(logKey);
+                console.warn("Binary odds preview unavailable", {
+                    side: direction,
+                    previewKey,
+                    ok: false,
+                    error,
+                    reason: debug?.reason ?? null,
+                    devInspectError: debug?.devInspectError ?? null,
+                    moveAbortCode: debug?.moveAbortCode ?? null,
+                    lastTriedQuantity: debug?.lastTriedQuantity ?? null,
+                    lastMintCost: debug?.lastMintCost ?? null,
+                    lastRedeemPayout: debug?.lastRedeemPayout ?? null,
+                    returnValuesRaw: debug?.returnValuesRaw ?? null,
+                });
+            };
+
+            let result: Awaited<ReturnType<typeof previewBinaryOddsViaApi>>;
+            try {
+                const previewContext = previewContextRef.current;
+                result = await previewBinaryOddsViaApi({
+                    address,
+                    market,
+                    budget,
+                    oracleTimestampMs: previewContext.oracleTimestampMs,
+                });
+            } catch (caught) {
                 if (previewRequestRef.current !== requestId) {
                     return;
                 }
-
-                let hasReady = false;
-                let hasError = false;
-                const applySide = (direction: BinaryDirection, side: ParsedBinaryPreviewSide) => {
-                    if (side.preview) {
-                        hasReady = true;
-                        const next = {
-                            status: "READY" as const,
-                            preview: side.preview,
-                            error: null,
-                            debug: side.debug,
-                            previewKey: result.previewKey,
-                        };
-                        if (direction === "UP") {
-                            setUpPreview(next);
-                        } else {
-                            setDownPreview(next);
-                        }
-                        return;
-                    }
-                    hasError = true;
-                    if (direction === "UP") {
-                        setUpPreview((current) =>
-                            current.preview && current.previewKey === result.previewKey
-                                ? {
-                                      ...current,
-                                      status: "READY",
-                                      error: side.error ?? "Preview failed",
-                                      debug: side.debug,
-                                  }
-                                : {
-                                      status: "ERROR",
-                                      preview: null,
-                                      error: side.error ?? "Preview failed",
-                                      debug: side.debug,
-                                      previewKey: result.previewKey,
-                                  },
-                        );
-                    } else {
-                        setDownPreview((current) =>
-                            current.preview && current.previewKey === result.previewKey
-                                ? {
-                                      ...current,
-                                      status: "READY",
-                                      error: side.error ?? "Preview failed",
-                                      debug: side.debug,
-                                  }
-                                : {
-                                      status: "ERROR",
-                                      preview: null,
-                                      error: side.error ?? "Preview failed",
-                                      debug: side.debug,
-                                      previewKey: result.previewKey,
-                                  },
-                        );
-                    }
-                    warnPreviewFailure({
-                        direction,
-                        error: side.error ?? "Preview failed",
-                        debug: side.debug,
-                    });
-                };
-
-                applySide("UP", result.up);
-                applySide("DOWN", result.down);
-
-                setPreviewStatus(
-                    hasReady || hasSuccessfulPreviewRef.current
-                        ? "READY"
-                        : hasError
-                          ? "ERROR"
-                          : "UNAVAILABLE",
+                const error = readErrorMessage(caught);
+                setUpPreview((current) =>
+                    current.preview
+                        ? { ...current, status: "READY", error }
+                        : silent
+                          ? current
+                          : {
+                                status: "ERROR",
+                                preview: null,
+                                error,
+                                debug: null,
+                                previewKey,
+                            },
                 );
-                const up = result.up.preview;
-                const down = result.down.preview;
-                if (up || down) {
-                    console.info("Binary odds preview", {
-                        oracleId: market.oracleId,
-                        expiry: market.expiryMs,
-                        referenceStrikeRaw: market.strike.toString(),
-                        spotTimestampMs,
-                        betAmount: amount,
-                        upFirstTriedQuantity: up?.firstTriedQuantity.toString() ?? null,
-                        upQuantity: up?.quantity.toString() ?? null,
-                        upCost: up?.mintCost.toString() ?? null,
-                        upPayout: up?.redeemPayout.toString() ?? null,
-                        upOdds: up ? formatBinaryOddsFromQuantity(up.quantity, up.mintCost) : null,
-                        downFirstTriedQuantity: down?.firstTriedQuantity.toString() ?? null,
-                        downQuantity: down?.quantity.toString() ?? null,
-                        downCost: down?.mintCost.toString() ?? null,
-                        downPayout: down?.redeemPayout.toString() ?? null,
-                        downOdds: down
-                            ? formatBinaryOddsFromQuantity(down.quantity, down.mintCost)
-                            : null,
+                setDownPreview((current) =>
+                    current.preview
+                        ? { ...current, status: "READY", error }
+                        : silent
+                          ? current
+                          : {
+                                status: "ERROR",
+                                preview: null,
+                                error,
+                                debug: null,
+                                previewKey,
+                            },
+                );
+                if (!silent) {
+                    setPreviewStatus(hasSuccessfulPreviewRef.current ? "READY" : "ERROR");
+                }
+                warnPreviewFailure({ direction: "UP", error, debug: null });
+                warnPreviewFailure({ direction: "DOWN", error, debug: null });
+                return;
+            }
+            if (previewRequestRef.current !== requestId) {
+                return;
+            }
+
+            let hasReady = false;
+            let hasError = false;
+            const applySide = (direction: BinaryDirection, side: ParsedBinaryPreviewSide) => {
+                if (side.preview) {
+                    hasReady = true;
+                    const next = {
+                        status: "READY" as const,
+                        preview: side.preview,
+                        error: null,
+                        debug: side.debug,
                         previewKey: result.previewKey,
-                        cacheHit: result.cacheHit,
-                        previewTimestamp: Date.now(),
-                    });
-                }
-                if (hasError && !hasReady) {
-                    if (previewRequestRef.current !== requestId) {
-                        return;
+                    };
+                    if (direction === "UP") {
+                        setUpPreview(next);
+                    } else {
+                        setDownPreview(next);
                     }
-                    setPreviewStatus("ERROR");
+                    return;
                 }
-            })();
-        }, 750);
+                hasError = true;
+                const nextError = side.error ?? "Preview failed";
+                const applyFailure = (current: SidePreviewState): SidePreviewState =>
+                    current.preview && current.previewKey === result.previewKey
+                        ? {
+                              ...current,
+                              status: "READY",
+                              error: nextError,
+                              debug: side.debug,
+                          }
+                        : silent
+                          ? current
+                          : {
+                                status: "ERROR",
+                                preview: null,
+                                error: nextError,
+                                debug: side.debug,
+                                previewKey: result.previewKey,
+                            };
+                if (direction === "UP") {
+                    setUpPreview(applyFailure);
+                } else {
+                    setDownPreview(applyFailure);
+                }
+                warnPreviewFailure({
+                    direction,
+                    error: nextError,
+                    debug: side.debug,
+                });
+            };
+
+            applySide("UP", result.up);
+            applySide("DOWN", result.down);
+
+            if (hasReady || (!silent && hasSuccessfulPreviewRef.current)) {
+                setPreviewStatus("READY");
+            } else if (!silent) {
+                setPreviewStatus(hasError ? "ERROR" : "UNAVAILABLE");
+            }
+            const up = result.up.preview;
+            const down = result.down.preview;
+            if (up || down) {
+                const previewContext = previewContextRef.current;
+                console.info("Binary odds preview", {
+                    oracleId: market.oracleId,
+                    expiry: market.expiryMs,
+                    referenceStrikeRaw: market.strike.toString(),
+                    spotTimestampMs: previewContext.spotTimestampMs,
+                    betAmount: amount,
+                    upFirstTriedQuantity: up?.firstTriedQuantity.toString() ?? null,
+                    upQuantity: up?.quantity.toString() ?? null,
+                    upCost: up?.mintCost.toString() ?? null,
+                    upPayout: up?.redeemPayout.toString() ?? null,
+                    upOdds: up ? formatBinaryOddsFromQuantity(up.quantity, up.mintCost) : null,
+                    downFirstTriedQuantity: down?.firstTriedQuantity.toString() ?? null,
+                    downQuantity: down?.quantity.toString() ?? null,
+                    downCost: down?.mintCost.toString() ?? null,
+                    downPayout: down?.redeemPayout.toString() ?? null,
+                    downOdds: down
+                        ? formatBinaryOddsFromQuantity(down.quantity, down.mintCost)
+                        : null,
+                    previewKey: result.previewKey,
+                    cacheHit: result.cacheHit,
+                    previewTimestamp: Date.now(),
+                });
+            }
+        },
+        [address, amount, isBettingOpen, isTestnet, market],
+    );
+
+    useEffect(() => {
+        const timeoutId = window.setTimeout(() => {
+            void runBinaryPreview();
+        }, PREVIEW_DEBOUNCE_MS);
 
         return () => window.clearTimeout(timeoutId);
-    }, [address, amount, isBettingOpen, isTestnet, market, oracleTimestampMs, spotTimestampMs]);
+    }, [runBinaryPreview]);
+
+    useEffect(() => {
+        if (!address || !isTestnet || !isBettingOpen || !market) {
+            return;
+        }
+        const intervalId = window.setInterval(() => {
+            void runBinaryPreview({ force: true, silent: true });
+        }, PREVIEW_POLL_INTERVAL_MS);
+
+        return () => window.clearInterval(intervalId);
+    }, [address, isBettingOpen, isTestnet, market, runBinaryPreview]);
 
     const placeBet = useCallback(
         async (direction: BinaryDirection) => {
@@ -848,7 +894,6 @@ export function usePredictBinary(
             const expectedPreviewKey = buildPreviewApiKey({
                 market: lockedMarket,
                 budget,
-                oracleTimestampMs,
             });
             const canTradeBase =
                 Boolean(address) && isTestnet && isBettingOpen && Boolean(lockedMarket) && !isBusy;
@@ -902,6 +947,7 @@ export function usePredictBinary(
                         market: lockedMarket,
                         budget,
                         oracleTimestampMs,
+                        cachePolicy: "bypass",
                     });
                 } catch (caught) {
                     const error = readErrorMessage(caught);
@@ -1087,6 +1133,7 @@ export function usePredictBinary(
                     if (!nextManagerId) {
                         throw new Error("PredictManager creation could not be confirmed");
                     }
+                    saveCachedManagerId(address, nextManagerId);
                     setManagerId(nextManagerId);
                 }
 
@@ -1387,7 +1434,6 @@ export function usePredictBinary(
                 currentBetPreviewKey = buildPreviewApiKey({
                     market,
                     budget,
-                    oracleTimestampMs,
                 });
             }
         } catch {
@@ -1497,7 +1543,6 @@ export function usePredictBinary(
         lastRedeem,
         market,
         message,
-        oracleTimestampMs,
         placeBet,
         position,
         previewStatus,

@@ -1,13 +1,14 @@
 import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { NextResponse } from "next/server";
 import {
-    previewTradeWithinBudgetFast,
+    previewBreakWithinBudgetFast,
     previewRangeWithinBudgetFast,
     type RangeTradePreview,
     type BudgetedTradePreview,
 } from "@/src/lib/predict-binary/client";
 import { PREDICT_BINARY_CONFIG } from "@/src/lib/predict-binary/config";
 import { formatBinaryOddsFromQuantity } from "@/src/lib/predict-binary/odds";
+import { getSharedPreviewCache } from "@/src/lib/server/preview-cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -64,6 +65,24 @@ interface RangePreviewFailure {
 }
 
 type RangePreviewResponse = RangePreviewSuccess | BreakPreviewSuccess | RangePreviewFailure;
+
+const RATE_LIMIT_WINDOW_MS = 10_000;
+const RATE_LIMIT_MAX = 10;
+const ipCounts = new Map<string, { count: number; resetAt: number }>();
+
+function checkRateLimit(ip: string): boolean {
+    const now = Date.now();
+    const entry = ipCounts.get(ip);
+    if (!entry || now >= entry.resetAt) {
+        ipCounts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+        return true;
+    }
+    if (entry.count >= RATE_LIMIT_MAX) return false;
+    entry.count++;
+    return true;
+}
+
+const rangePreviewCache = getSharedPreviewCache<RangePreviewResponse>("predict:range-preview");
 
 const suiClient = new SuiJsonRpcClient({
     network: PREDICT_BINARY_CONFIG.network,
@@ -197,122 +216,124 @@ function failureResponse(
     };
 }
 
-export async function POST(request: Request): Promise<NextResponse<RangePreviewResponse>> {
-    let previewKey = "invalid";
-    let direction: "RANGE" | "BREAK" = "RANGE";
-    try {
-        const body = parseBody(await request.json());
-        direction = body.direction;
-        previewKey = buildPreviewKey(body);
-        const budget = BigInt(body.betAmountAtomic);
-        if (budget <= 0n) {
-            return NextResponse.json(
-                failureResponse(direction, previewKey, "Preview failed", "BET_AMOUNT_NOT_POSITIVE"),
-            );
+function isSuccessfulPreview(response: RangePreviewResponse): boolean {
+    return response.ok;
+}
+
+async function buildRangePreviewResponse(
+    body: RangePreviewRequest,
+    previewKey: string,
+    direction: "RANGE" | "BREAK",
+): Promise<RangePreviewResponse> {
+    const budget = BigInt(body.betAmountAtomic);
+    if (budget <= 0n) {
+        return failureResponse(direction, previewKey, "Preview failed", "BET_AMOUNT_NOT_POSITIVE");
+    }
+    if (BigInt(body.lowerStrikeRaw) >= BigInt(body.higherStrikeRaw)) {
+        return failureResponse(direction, previewKey, "Preview failed", "INVALID_RANGE");
+    }
+    if (body.direction === "BREAK") {
+        const lowerBudget = budget / 2n;
+        const upperBudget = budget - lowerBudget;
+        if (lowerBudget <= 0n || upperBudget <= 0n) {
+            return failureResponse(direction, previewKey, "Preview failed", "BET_AMOUNT_TOO_SMALL");
         }
-        if (BigInt(body.lowerStrikeRaw) >= BigInt(body.higherStrikeRaw)) {
-            return NextResponse.json(
-                failureResponse(direction, previewKey, "Preview failed", "INVALID_RANGE"),
-            );
-        }
-        if (body.direction === "BREAK") {
-            const lowerBudget = budget / 2n;
-            const upperBudget = budget - lowerBudget;
-            if (lowerBudget <= 0n || upperBudget <= 0n) {
-                return NextResponse.json(
-                    failureResponse(direction, previewKey, "Preview failed", "BET_AMOUNT_TOO_SMALL"),
-                );
-            }
-            const [lowerLeg, upperLeg] = await Promise.all([
-                previewTradeWithinBudgetFast({
-                    client: suiClient,
-                    sender: body.walletAddress,
-                    oracleId: body.oracleId,
-                    expiryMs: Number(body.expiryMs),
-                    strike: BigInt(body.lowerStrikeRaw),
-                    isUp: false,
-                    budget: lowerBudget,
-                }),
-                previewTradeWithinBudgetFast({
-                    client: suiClient,
-                    sender: body.walletAddress,
-                    oracleId: body.oracleId,
-                    expiryMs: Number(body.expiryMs),
-                    strike: BigInt(body.higherStrikeRaw),
-                    isUp: true,
-                    budget: upperBudget,
-                }),
-            ]);
-            if (process.env.NODE_ENV !== "production") {
-                const totalCost = lowerLeg.mintCost + upperLeg.mintCost;
-                const effectivePayout =
-                    lowerLeg.quantity < upperLeg.quantity ? lowerLeg.quantity : upperLeg.quantity;
-                console.info("Range preview raw", {
-                    direction: "BREAK",
-                    previewKey,
-                    oracleId: body.oracleId,
-                    expiryMs: body.expiryMs,
-                    lowerStrikeRaw: body.lowerStrikeRaw,
-                    higherStrikeRaw: body.higherStrikeRaw,
-                    betAmountAtomic: body.betAmountAtomic,
-                    split: {
-                        lowerBudget: lowerBudget.toString(),
-                        upperBudget: upperBudget.toString(),
-                    },
-                    lowerLeg: {
-                        side: "DOWN",
-                        strikeRaw: body.lowerStrikeRaw,
-                        quantity: lowerLeg.quantity.toString(),
-                        mintCost: lowerLeg.mintCost.toString(),
-                        payout: lowerLeg.quantity.toString(),
-                        liveOdds: formatBinaryOddsFromQuantity(
-                            lowerLeg.quantity,
-                            lowerLeg.mintCost,
-                        ),
-                    },
-                    upperLeg: {
-                        side: "UP",
-                        strikeRaw: body.higherStrikeRaw,
-                        quantity: upperLeg.quantity.toString(),
-                        mintCost: upperLeg.mintCost.toString(),
-                        payout: upperLeg.quantity.toString(),
-                        liveOdds: formatBinaryOddsFromQuantity(
-                            upperLeg.quantity,
-                            upperLeg.mintCost,
-                        ),
-                    },
-                    effectivePayout: effectivePayout.toString(),
-                    mintCost: totalCost.toString(),
-                    effectiveOdds: formatBinaryOddsFromQuantity(effectivePayout, totalCost),
-                });
-            }
-            return NextResponse.json(breakSuccessResponse({ previewKey, lowerLeg, upperLeg }));
-        }
-        const preview = await previewRangeWithinBudgetFast({
+        const { lowerLeg, upperLeg } = await previewBreakWithinBudgetFast({
             client: suiClient,
             sender: body.walletAddress,
             oracleId: body.oracleId,
             expiryMs: Number(body.expiryMs),
             lowerStrike: BigInt(body.lowerStrikeRaw),
             higherStrike: BigInt(body.higherStrikeRaw),
-            budget,
+            lowerBudget,
+            upperBudget,
         });
         if (process.env.NODE_ENV !== "production") {
+            const totalCost = lowerLeg.mintCost + upperLeg.mintCost;
+            const effectivePayout =
+                lowerLeg.quantity < upperLeg.quantity ? lowerLeg.quantity : upperLeg.quantity;
             console.info("Range preview raw", {
-                direction: "RANGE",
+                direction: "BREAK",
                 previewKey,
                 oracleId: body.oracleId,
                 expiryMs: body.expiryMs,
                 lowerStrikeRaw: body.lowerStrikeRaw,
                 higherStrikeRaw: body.higherStrikeRaw,
                 betAmountAtomic: body.betAmountAtomic,
-                quantity: preview.quantity.toString(),
-                mintCost: preview.mintCost.toString(),
-                redeemPayout: preview.redeemPayout.toString(),
-                liveOdds: formatBinaryOddsFromQuantity(preview.quantity, preview.mintCost),
+                split: {
+                    lowerBudget: lowerBudget.toString(),
+                    upperBudget: upperBudget.toString(),
+                },
+                lowerLeg: {
+                    side: "DOWN",
+                    strikeRaw: body.lowerStrikeRaw,
+                    quantity: lowerLeg.quantity.toString(),
+                    mintCost: lowerLeg.mintCost.toString(),
+                    payout: lowerLeg.quantity.toString(),
+                    liveOdds: formatBinaryOddsFromQuantity(lowerLeg.quantity, lowerLeg.mintCost),
+                },
+                upperLeg: {
+                    side: "UP",
+                    strikeRaw: body.higherStrikeRaw,
+                    quantity: upperLeg.quantity.toString(),
+                    mintCost: upperLeg.mintCost.toString(),
+                    payout: upperLeg.quantity.toString(),
+                    liveOdds: formatBinaryOddsFromQuantity(upperLeg.quantity, upperLeg.mintCost),
+                },
+                effectivePayout: effectivePayout.toString(),
+                mintCost: totalCost.toString(),
+                effectiveOdds: formatBinaryOddsFromQuantity(effectivePayout, totalCost),
             });
         }
-        return NextResponse.json(successResponse(previewKey, preview));
+        return breakSuccessResponse({ previewKey, lowerLeg, upperLeg });
+    }
+    const preview = await previewRangeWithinBudgetFast({
+        client: suiClient,
+        sender: body.walletAddress,
+        oracleId: body.oracleId,
+        expiryMs: Number(body.expiryMs),
+        lowerStrike: BigInt(body.lowerStrikeRaw),
+        higherStrike: BigInt(body.higherStrikeRaw),
+        budget,
+    });
+    if (process.env.NODE_ENV !== "production") {
+        console.info("Range preview raw", {
+            direction: "RANGE",
+            previewKey,
+            oracleId: body.oracleId,
+            expiryMs: body.expiryMs,
+            lowerStrikeRaw: body.lowerStrikeRaw,
+            higherStrikeRaw: body.higherStrikeRaw,
+            betAmountAtomic: body.betAmountAtomic,
+            quantity: preview.quantity.toString(),
+            mintCost: preview.mintCost.toString(),
+            redeemPayout: preview.redeemPayout.toString(),
+            liveOdds: formatBinaryOddsFromQuantity(preview.quantity, preview.mintCost),
+        });
+    }
+    return successResponse(previewKey, preview);
+}
+
+export async function POST(request: Request): Promise<NextResponse<RangePreviewResponse>> {
+    const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+    if (!checkRateLimit(ip)) {
+        return NextResponse.json(
+            failureResponse("RANGE", "rate-limited", "Too many requests", "RATE_LIMITED"),
+            { status: 429 },
+        );
+    }
+    let previewKey = "invalid";
+    let direction: "RANGE" | "BREAK" = "RANGE";
+    try {
+        const body = parseBody(await request.json());
+        direction = body.direction;
+        previewKey = buildPreviewKey(body);
+        const response = await rangePreviewCache.getOrLoad(
+            previewKey,
+            () => buildRangePreviewResponse(body, previewKey, direction),
+            { shouldCache: isSuccessfulPreview },
+        );
+        return NextResponse.json(response.value);
     } catch (caught) {
         console.warn("range-preview route failed", {
             previewKey,

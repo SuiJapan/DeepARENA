@@ -604,6 +604,32 @@ function NextRangeRoundCard({
                     <span>BREAK</span>
                     <strong>{nextRangeRound.odds}</strong>
                 </button>
+                {range.activePositionDirection ? (
+                    <>
+                        {range.activePositionDirection === "RANGE" ? (
+                            <div className="binary-position-chip position-range">
+                                <span>YOUR BET</span>
+                                <strong>{range.activePositionCostLabel}</strong>
+                                {range.activePositionEntryOdds ? (
+                                    <em>Entry {range.activePositionEntryOdds}</em>
+                                ) : null}
+                            </div>
+                        ) : (
+                            <div className="binary-position-chip position-empty" aria-hidden />
+                        )}
+                        {range.activePositionDirection === "BREAK" ? (
+                            <div className="binary-position-chip position-break">
+                                <span>YOUR BET</span>
+                                <strong>{range.activePositionCostLabel}</strong>
+                                {range.activePositionEntryOdds ? (
+                                    <em>Entry {range.activePositionEntryOdds}</em>
+                                ) : null}
+                            </div>
+                        ) : (
+                            <div className="binary-position-chip position-empty" aria-hidden />
+                        )}
+                    </>
+                ) : null}
             </fieldset>
             <label className="binary-amount">
                 <span>Amount</span>
@@ -631,7 +657,38 @@ function NextRangeRoundCard({
                 Enter Next Round
             </button>
             <div className="binary-entry-status" aria-live="polite">
-                {entryMessage ?? "Choose IN RANGE or BREAK for the next round."}
+                {range.activePositionDirection && range.activePositionCostLabel ? (
+                    <>
+                        <span>YOUR PICK {range.activePositionDirection}</span>
+                        <span>BET {range.activePositionCostLabel}</span>
+                        {range.activePositionEntryOdds ? (
+                            <span>ENTRY ODDS {range.activePositionEntryOdds}</span>
+                        ) : null}
+                    </>
+                ) : range.txStatus === "FAILED" ? (
+                    <span>{range.message}</span>
+                ) : (
+                    statusMessage
+                )}
+            </div>
+        </section>
+    );
+}
+
+function LeaderboardSkeleton() {
+    return (
+        <section className="surface leaderboard">
+            <div className="section-title">
+                <div>
+                    <span>Live standings</span>
+                    <h2>Leaderboard</h2>
+                </div>
+            </div>
+            <div className="leader-list" aria-busy="true">
+                {[1, 2, 3].map((n) => (
+                    <div className="leader-row skeleton" key={n} />
+                ))}
+
             </div>
         </section>
     );
@@ -795,6 +852,7 @@ function HomeContent() {
         window.location.hash = nextView;
     }
 
+
     return (
         <main className="app-shell">
             <header className="app-header">
@@ -911,7 +969,11 @@ function HomeContent() {
                                 }
                                 market={market}
                             />
-                            <Leaderboard players={players} />
+                            {players !== null ? (
+                                <Leaderboard players={players} />
+                            ) : (
+                                <LeaderboardSkeleton />
+                            )}
                         </div>
                     </section>
                 </section>

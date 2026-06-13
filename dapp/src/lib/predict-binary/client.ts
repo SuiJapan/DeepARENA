@@ -1,12 +1,20 @@
 import { bcs } from "@mysten/sui/bcs";
 import type { SuiClientTypes } from "@mysten/sui/client";
 import type { Transaction } from "@mysten/sui/transactions";
-import { PREDICT_BINARY_CONFIG } from "./config";
-import { readSuiEventPayload } from "./events";
-import { type BudgetedTradePreview, findBudgetedTradePreview, type TradeAmounts } from "./preview";
+import { PREDICT_BINARY_CONFIG } from "./config.ts";
+import { readSuiEventPayload } from "./events.ts";
 import {
+    type BudgetedTradePreview,
+    findBudgetedTradePreview,
+    type TradeAmounts,
+} from "./preview.ts";
+import { decodeAllTradeAmountReturns } from "./preview-decode.ts";
+import {
+    type BatchRangePreviewInput,
     type BinaryMarketKeyInput,
     calcMaxTotalCost,
+    createBatchPreviewTransaction,
+    createBatchRangePreviewTransaction,
     createMintBinaryTransaction,
     createPreviewRangeTradeAmountsTransaction,
     createPreviewTradeAmountsTransaction,
@@ -14,7 +22,7 @@ import {
     createReadManagerBalanceTransaction,
     type RangeKeyInput,
     target,
-} from "./transactions";
+} from "./transactions.ts";
 
 export interface BtcBinaryMarket {
     oracleId: string;
@@ -23,6 +31,7 @@ export interface BtcBinaryMarket {
 }
 
 export type { BudgetedTradePreview, TradeAmounts } from "./preview";
+export { decodeAllTradeAmountReturns } from "./preview-decode.ts";
 
 export interface TradePreviewDebugDetails {
     functionName: string;
@@ -70,12 +79,12 @@ export interface TradePreviewDebugDetails {
 }
 
 export class TradePreviewError extends Error {
-    constructor(
-        message: string,
-        readonly details: TradePreviewDebugDetails,
-    ) {
+    readonly details: TradePreviewDebugDetails;
+
+    constructor(message: string, details: TradePreviewDebugDetails) {
         super(message);
         this.name = "TradePreviewError";
+        this.details = details;
     }
 }
 
@@ -299,17 +308,9 @@ function decodeU64PairReturnValue(value: unknown): [bigint, bigint] | null {
     return [view.getBigUint64(0, true), view.getBigUint64(8, true)];
 }
 
-function decodeTradeAmountReturns(
-    result: SuiClientTypes.SimulateTransactionResult<{ commandResults: true }>,
-): { mintCost: bigint; redeemPayout: bigint; decodedReturnValues: bigint[] } {
-    if (result.$kind === "FailedTransaction") {
-        throw new Error("Simulation failed");
-    }
-    const commandResults = readCommandResults(result);
-    const lastCommandWithReturns = [...commandResults]
-        .reverse()
-        .find((command) => readCommandReturnValues(command).length > 0);
-    const returnValues = readCommandReturnValues(lastCommandWithReturns);
+function decodeTradeAmountReturnValues(
+    returnValues: unknown[],
+): { mintCost: bigint; redeemPayout: bigint; decodedReturnValues: bigint[] } | null {
     if (returnValues.length < 2) {
         const tupleValues =
             returnValues.length === 1 ? decodeU64PairReturnValue(returnValues[0]) : null;
@@ -317,14 +318,31 @@ function decodeTradeAmountReturns(
             const [mintCost, redeemPayout] = tupleValues;
             return { mintCost, redeemPayout, decodedReturnValues: tupleValues };
         }
-        throw new Error("Trade preview returned fewer than two values");
+        return null;
     }
-    const decodedReturnValues = returnValues.map(decodeU64ReturnValue);
+    const decodedReturnValues = returnValues.slice(0, 2).map(decodeU64ReturnValue);
     const [mintCost, redeemPayout] = decodedReturnValues;
     if (mintCost === undefined || redeemPayout === undefined) {
         throw new Error("Trade preview is missing return values");
     }
     return { mintCost, redeemPayout, decodedReturnValues };
+}
+
+function decodeTradeAmountReturns(
+    result: SuiClientTypes.SimulateTransactionResult<{ commandResults: true }>,
+): { mintCost: bigint; redeemPayout: bigint; decodedReturnValues: bigint[] } {
+    if (result.$kind === "FailedTransaction") {
+        throw new Error("Simulation failed");
+    }
+    const commandResults = readCommandResults(result);
+    const decoded = [...commandResults]
+        .reverse()
+        .map((command) => decodeTradeAmountReturnValues(readCommandReturnValues(command)))
+        .find((value) => value !== null);
+    if (!decoded) {
+        throw new Error("Trade preview returned no trade amount values");
+    }
+    return decoded;
 }
 
 function toJsonSafe(value: unknown): unknown {
@@ -459,6 +477,22 @@ function createTradePreviewDebugDetails({
 
 const loggedFirstPreviewExecutions = new Set<string>();
 const loggedReturnValueDecodes = new Set<string>();
+const MAX_LOGGED_PREVIEW_KEYS = 1000;
+
+function addBoundedPreviewLogKey(keys: Set<string>, key: string): boolean {
+    if (keys.has(key)) {
+        return false;
+    }
+    keys.add(key);
+    while (keys.size > MAX_LOGGED_PREVIEW_KEYS) {
+        const oldestKey = keys.keys().next().value;
+        if (typeof oldestKey !== "string") {
+            break;
+        }
+        keys.delete(oldestKey);
+    }
+    return true;
+}
 
 function logFirstPreviewExecution({
     input,
@@ -477,6 +511,7 @@ function logFirstPreviewExecution({
     firstPreviewError: string | null;
     throwReason: string | null;
 }) {
+    if (process.env.DEBUG_PREDICT !== "1") return;
     const side = input.isUp ? "UP" : "DOWN";
     const key = [
         side,
@@ -486,10 +521,9 @@ function logFirstPreviewExecution({
         input.strike.toString(),
         budget.toString(),
     ].join(":");
-    if (loggedFirstPreviewExecutions.has(key)) {
+    if (!addBoundedPreviewLogKey(loggedFirstPreviewExecutions, key)) {
         return;
     }
-    loggedFirstPreviewExecutions.add(key);
     console.info("Binary odds preview execution", {
         side,
         functionName: "previewTradeWithinBudget",
@@ -528,6 +562,7 @@ function logTradeAmountDecode({
     mintCost: bigint;
     redeemPayout: bigint;
 }) {
+    if (process.env.DEBUG_PREDICT !== "1") return;
     const side = input.isUp ? "UP" : "DOWN";
     const key = [
         side,
@@ -537,10 +572,9 @@ function logTradeAmountDecode({
         input.strike.toString(),
         quantity.toString(),
     ].join(":");
-    if (loggedReturnValueDecodes.has(key)) {
+    if (!addBoundedPreviewLogKey(loggedReturnValueDecodes, key)) {
         return;
     }
-    loggedReturnValueDecodes.add(key);
     console.info("Binary odds preview return decode", {
         side,
         quantity: quantity.toString(),
@@ -713,7 +747,165 @@ export async function previewRangeWithinBudgetServerOnly({
     };
 }
 
-export async function previewRangeWithinBudgetFast({
+function uniquePositiveQuantities(values: bigint[]): bigint[] {
+    const seen = new Set<string>();
+    const quantities: bigint[] = [];
+    for (const value of values) {
+        if (value <= 0n) {
+            continue;
+        }
+        const key = value.toString();
+        if (seen.has(key)) {
+            continue;
+        }
+        seen.add(key);
+        quantities.push(value);
+    }
+    return quantities;
+}
+
+function buildPreviewCandidateQuantities(budget: bigint): bigint[] {
+    return uniquePositiveQuantities([budget, (budget * 3n) / 4n, budget / 2n, budget / 4n, 1n]);
+}
+
+function buildVerificationQuantities({
+    budget,
+    candidates,
+}: {
+    budget: bigint;
+    candidates: TradeAmountsPreview[];
+}): bigint[] {
+    const priced = candidates.filter((candidate) => candidate.mintCost > 0n);
+    if (priced.length === 0) {
+        return [];
+    }
+    const anchor = priced.reduce((best, candidate) => {
+        const bestDistance =
+            best.mintCost > budget ? best.mintCost - budget : budget - best.mintCost;
+        const candidateDistance =
+            candidate.mintCost > budget ? candidate.mintCost - budget : budget - candidate.mintCost;
+        return candidateDistance < bestDistance ? candidate : best;
+    });
+    const estimated = (budget * anchor.quantity) / anchor.mintCost;
+    return uniquePositiveQuantities([estimated, estimated - 1n, estimated + 1n]);
+}
+
+interface TradeAmountsPreview extends TradeAmounts {
+    quantity: bigint;
+}
+
+function selectBestBudgetedPreview<T extends TradeAmountsPreview>(
+    budget: bigint,
+    candidates: T[],
+): T | null {
+    return candidates.reduce<T | null>((best, candidate) => {
+        if (candidate.mintCost <= 0n || candidate.mintCost > budget) {
+            return best;
+        }
+        if (!best || candidate.quantity > best.quantity) {
+            return candidate;
+        }
+        return best;
+    }, null);
+}
+
+async function previewRangeBatchTradeAmounts({
+    client,
+    sender,
+    quantities,
+    ...input
+}: RangeKeyInput & {
+    client: SimulateClient;
+    sender: string;
+    quantities: bigint[];
+}): Promise<RangeTradePreview[]> {
+    const batchInputs: BatchRangePreviewInput[] = quantities.map((quantity) => ({
+        key: input,
+        quantity,
+    }));
+    const result = await client.core.simulateTransaction({
+        transaction: createBatchRangePreviewTransaction({ sender, inputs: batchInputs }),
+        checksEnabled: false,
+        include: { commandResults: true },
+    });
+    const amounts = decodeAllTradeAmountReturns(result);
+    if (amounts.length !== quantities.length) {
+        throw new Error("Batch range preview returned an unexpected number of results");
+    }
+    return quantities.map((quantity, index) => {
+        const amount = amounts[index];
+        if (!amount) {
+            throw new Error("Batch range preview result is missing");
+        }
+        return { quantity, ...amount };
+    });
+}
+
+async function previewRangeWithinBudgetBatched({
+    client,
+    budget,
+    ...input
+}: RangeKeyInput & {
+    client: SimulateClient;
+    sender: string;
+    budget: bigint;
+}): Promise<RangeTradePreview> {
+    if (budget <= 0n) {
+        throw new Error("Amount must be greater than zero");
+    }
+
+    const firstQuantities = buildPreviewCandidateQuantities(budget);
+    const firstBatch = await previewRangeBatchTradeAmounts({
+        client,
+        ...input,
+        quantities: firstQuantities,
+    });
+    const secondQuantities = buildVerificationQuantities({ budget, candidates: firstBatch }).filter(
+        (quantity) => !firstQuantities.includes(quantity),
+    );
+    const secondBatch =
+        secondQuantities.length > 0
+            ? await previewRangeBatchTradeAmounts({
+                  client,
+                  ...input,
+                  quantities: secondQuantities,
+              })
+            : [];
+    const candidates = [...firstBatch, ...secondBatch];
+    const best = selectBestBudgetedPreview(budget, candidates);
+    if (!best) {
+        throw new Error("Amount is too small for a mintable range quantity");
+    }
+    if (process.env.DEBUG_PREDICT === "1") {
+        console.info("Range preview batch search", {
+            rpcBatches: secondBatch.length > 0 ? 2 : 1,
+            candidates: candidates.length,
+            quantity: best.quantity.toString(),
+            mintCost: best.mintCost.toString(),
+            redeemPayout: best.redeemPayout.toString(),
+        });
+    }
+    return best;
+}
+
+export async function previewRangeWithinBudgetFast(
+    input: RangeKeyInput & {
+        client: SimulateClient;
+        sender: string;
+        budget: bigint;
+    },
+): Promise<RangeTradePreview> {
+    try {
+        return await previewRangeWithinBudgetBatched(input);
+    } catch (caught) {
+        console.warn("Range preview batch search fell back to single-call search", {
+            reason: caught instanceof Error ? caught.message : String(caught),
+        });
+        return previewRangeWithinBudgetFastFallback(input);
+    }
+}
+
+async function previewRangeWithinBudgetFastFallback({
     client,
     budget,
     ...input
@@ -796,23 +988,27 @@ export async function previewRangeWithinBudgetFast({
     }
 
     if (!best) {
-        console.info("Range preview fast search no mintable quantity", {
-            attempts,
-            lastTriedQuantity: lastQuantity.toString(),
-            lastMintCost,
-            lastRedeemPayout,
-            budget: budget.toString(),
-        });
+        if (process.env.DEBUG_PREDICT === "1") {
+            console.info("Range preview fast search no mintable quantity", {
+                attempts,
+                lastTriedQuantity: lastQuantity.toString(),
+                lastMintCost,
+                lastRedeemPayout,
+                budget: budget.toString(),
+            });
+        }
         throw new Error("Amount is too small for a mintable range quantity");
     }
 
     const finalBest = best as RangeTradePreview;
-    console.info("Range preview fast search", {
-        attempts,
-        quantity: finalBest.quantity.toString(),
-        mintCost: finalBest.mintCost.toString(),
-        redeemPayout: finalBest.redeemPayout.toString(),
-    });
+    if (process.env.DEBUG_PREDICT === "1") {
+        console.info("Range preview fast search", {
+            attempts,
+            quantity: finalBest.quantity.toString(),
+            mintCost: finalBest.mintCost.toString(),
+            redeemPayout: finalBest.redeemPayout.toString(),
+        });
+    }
     return finalBest;
 }
 
@@ -925,7 +1121,349 @@ export async function previewTradeWithinBudgetServerOnly({
     };
 }
 
-export async function previewTradeWithinBudgetFast({
+type BudgetedBinaryMarketInput = BinaryMarketKeyInput & { budget: bigint };
+
+interface BinaryBatchRequest {
+    marketIndex: number;
+    key: BudgetedBinaryMarketInput;
+    quantity: bigint;
+}
+
+async function simulateBinaryBatchRequests({
+    client,
+    sender,
+    requests,
+}: {
+    client: SimulateClient;
+    sender: string;
+    requests: BinaryBatchRequest[];
+}): Promise<Array<{ marketIndex: number; preview: BudgetedTradePreview }>> {
+    if (requests.length === 0) {
+        return [];
+    }
+    const result = await client.core.simulateTransaction({
+        transaction: createBatchPreviewTransaction({ sender, inputs: requests }),
+        checksEnabled: false,
+        include: { commandResults: true },
+    });
+    const amounts = decodeAllTradeAmountReturns(result);
+    if (amounts.length !== requests.length) {
+        throw new Error("Batch binary preview returned an unexpected number of results");
+    }
+    return requests.map((request, index) => {
+        const amount = amounts[index];
+        if (!amount) {
+            throw new Error("Batch binary preview result is missing");
+        }
+        const decodedReturnValues = [amount.mintCost, amount.redeemPayout];
+        const debugInput = {
+            sender,
+            oracleId: request.key.oracleId,
+            expiryMs: request.key.expiryMs,
+            strike: request.key.strike,
+            isUp: request.key.isUp,
+        };
+        const details = createTradePreviewDebugDetails({
+            input: debugInput,
+            quantity: request.quantity,
+            betAmountAtomic: request.key.budget,
+            result,
+            caught: null,
+            decodedReturnValues,
+            decodedMintCost: amount.mintCost,
+            decodedRedeemPayout: amount.redeemPayout,
+        });
+        logTradeAmountDecode({
+            input: debugInput,
+            quantity: request.quantity,
+            result,
+            returnValuesRaw: readReturnValuesRaw(result),
+            decodedReturnValues,
+            mintCost: amount.mintCost,
+            redeemPayout: amount.redeemPayout,
+        });
+        return {
+            marketIndex: request.marketIndex,
+            preview: {
+                quantity: request.quantity,
+                firstTriedQuantity: request.key.budget,
+                ...amount,
+                debug: details,
+            },
+        };
+    });
+}
+
+async function previewBudgetedBinaryMarketsBatched({
+    client,
+    sender,
+    markets,
+}: {
+    client: SimulateClient;
+    sender: string;
+    markets: BudgetedBinaryMarketInput[];
+}): Promise<BudgetedTradePreview[]> {
+    for (const market of markets) {
+        if (market.budget <= 0n) {
+            throw new Error("Amount must be greater than zero");
+        }
+    }
+    const firstRequests = markets.flatMap((market, marketIndex) =>
+        buildPreviewCandidateQuantities(market.budget).map((quantity) => ({
+            marketIndex,
+            key: market,
+            quantity,
+        })),
+    );
+    const firstResults = await simulateBinaryBatchRequests({
+        client,
+        sender,
+        requests: firstRequests,
+    });
+    const requestsByMarket = new Map<number, BinaryBatchRequest[]>();
+    for (const request of firstRequests) {
+        const requests = requestsByMarket.get(request.marketIndex) ?? [];
+        requests.push(request);
+        requestsByMarket.set(request.marketIndex, requests);
+    }
+    const previewsByMarket = new Map<number, BudgetedTradePreview[]>();
+    for (const result of firstResults) {
+        const previews = previewsByMarket.get(result.marketIndex) ?? [];
+        previews.push(result.preview);
+        previewsByMarket.set(result.marketIndex, previews);
+    }
+
+    const secondRequests = markets.flatMap((market, marketIndex) => {
+        const firstQuantities = new Set(
+            (requestsByMarket.get(marketIndex) ?? []).map((request) => request.quantity.toString()),
+        );
+        return buildVerificationQuantities({
+            budget: market.budget,
+            candidates: previewsByMarket.get(marketIndex) ?? [],
+        })
+            .filter((quantity) => !firstQuantities.has(quantity.toString()))
+            .map((quantity) => ({ marketIndex, key: market, quantity }));
+    });
+    const secondResults = await simulateBinaryBatchRequests({
+        client,
+        sender,
+        requests: secondRequests,
+    });
+    for (const result of secondResults) {
+        const previews = previewsByMarket.get(result.marketIndex) ?? [];
+        previews.push(result.preview);
+        previewsByMarket.set(result.marketIndex, previews);
+    }
+
+    return markets.map((market, marketIndex) => {
+        const candidates = previewsByMarket.get(marketIndex) ?? [];
+        const best = selectBestBudgetedPreview(market.budget, candidates);
+        if (!best) {
+            const last = candidates.at(-1);
+            const throwReason = "Amount is too small for a mintable quantity";
+            throw new TradePreviewError(
+                throwReason,
+                createTradePreviewDebugDetails({
+                    input: {
+                        sender,
+                        oracleId: market.oracleId,
+                        expiryMs: market.expiryMs,
+                        strike: market.strike,
+                        isUp: market.isUp,
+                    },
+                    quantity: last?.quantity ?? 1n,
+                    betAmountAtomic: market.budget,
+                    result: null,
+                    caught: new Error(throwReason),
+                    throwReason,
+                    decodedMintCost: last?.mintCost ?? null,
+                    decodedRedeemPayout: last?.redeemPayout ?? null,
+                }),
+            );
+        }
+        if (process.env.DEBUG_PREDICT === "1") {
+            console.info("Binary odds preview batch search", {
+                side: market.isUp ? "UP" : "DOWN",
+                rpcBatches: secondRequests.length > 0 ? 2 : 1,
+                candidates: candidates.length,
+                quantity: best.quantity.toString(),
+                mintCost: best.mintCost.toString(),
+                redeemPayout: best.redeemPayout.toString(),
+            });
+        }
+        return best;
+    });
+}
+
+export async function previewBinarySidesWithinBudgetFast({
+    client,
+    sender,
+    oracleId,
+    expiryMs,
+    strike,
+    budget,
+}: {
+    client: SimulateClient;
+    sender: string;
+    oracleId: string;
+    expiryMs: number;
+    strike: bigint;
+    budget: bigint;
+}): Promise<{ up: BudgetedTradePreview; down: BudgetedTradePreview }> {
+    try {
+        const [up, down] = await previewBudgetedBinaryMarketsBatched({
+            client,
+            sender,
+            markets: [
+                { oracleId, expiryMs, strike, isUp: true, budget },
+                { oracleId, expiryMs, strike, isUp: false, budget },
+            ],
+        });
+        if (!up || !down) {
+            throw new Error("Batch binary side preview result is missing");
+        }
+        return { up, down };
+    } catch (caught) {
+        console.warn("Binary side batch preview fell back to per-side search", {
+            reason: caught instanceof Error ? caught.message : String(caught),
+        });
+        const [up, down] = await Promise.all([
+            previewTradeWithinBudgetFastFallback({
+                client,
+                sender,
+                oracleId,
+                expiryMs,
+                strike,
+                isUp: true,
+                budget,
+            }),
+            previewTradeWithinBudgetFastFallback({
+                client,
+                sender,
+                oracleId,
+                expiryMs,
+                strike,
+                isUp: false,
+                budget,
+            }),
+        ]);
+        return { up, down };
+    }
+}
+
+export async function previewBreakWithinBudgetFast({
+    client,
+    sender,
+    oracleId,
+    expiryMs,
+    lowerStrike,
+    higherStrike,
+    lowerBudget,
+    upperBudget,
+}: {
+    client: SimulateClient;
+    sender: string;
+    oracleId: string;
+    expiryMs: number;
+    lowerStrike: bigint;
+    higherStrike: bigint;
+    lowerBudget: bigint;
+    upperBudget: bigint;
+}): Promise<{ lowerLeg: BudgetedTradePreview; upperLeg: BudgetedTradePreview }> {
+    try {
+        const [lowerLeg, upperLeg] = await previewBudgetedBinaryMarketsBatched({
+            client,
+            sender,
+            markets: [
+                { oracleId, expiryMs, strike: lowerStrike, isUp: false, budget: lowerBudget },
+                { oracleId, expiryMs, strike: higherStrike, isUp: true, budget: upperBudget },
+            ],
+        });
+        if (!lowerLeg || !upperLeg) {
+            throw new Error("Batch break preview result is missing");
+        }
+        return { lowerLeg, upperLeg };
+    } catch (caught) {
+        console.warn("Break batch preview fell back to per-leg search", {
+            reason: caught instanceof Error ? caught.message : String(caught),
+        });
+        const [lowerLeg, upperLeg] = await Promise.all([
+            previewTradeWithinBudgetFastFallback({
+                client,
+                sender,
+                oracleId,
+                expiryMs,
+                strike: lowerStrike,
+                isUp: false,
+                budget: lowerBudget,
+            }),
+            previewTradeWithinBudgetFastFallback({
+                client,
+                sender,
+                oracleId,
+                expiryMs,
+                strike: higherStrike,
+                isUp: true,
+                budget: upperBudget,
+            }),
+        ]);
+        return { lowerLeg, upperLeg };
+    }
+}
+
+async function previewTradeWithinBudgetBatched({
+    client,
+    sender,
+    oracleId,
+    expiryMs,
+    strike,
+    isUp,
+    budget,
+}: {
+    client: SimulateClient;
+    sender: string;
+    oracleId: string;
+    expiryMs: number;
+    strike: bigint;
+    isUp: boolean;
+    budget: bigint;
+}): Promise<BudgetedTradePreview> {
+    if (budget <= 0n) {
+        throw new Error("Amount must be greater than zero");
+    }
+
+    const [preview] = await previewBudgetedBinaryMarketsBatched({
+        client,
+        sender,
+        markets: [{ oracleId, expiryMs, strike, isUp, budget }],
+    });
+    if (!preview) {
+        throw new Error("Batch binary preview result is missing");
+    }
+    return preview;
+}
+
+export async function previewTradeWithinBudgetFast(input: {
+    client: SimulateClient;
+    sender: string;
+    oracleId: string;
+    expiryMs: number;
+    strike: bigint;
+    isUp: boolean;
+    budget: bigint;
+}): Promise<BudgetedTradePreview> {
+    try {
+        return await previewTradeWithinBudgetBatched(input);
+    } catch (caught) {
+        console.warn("Binary preview batch search fell back to single-call search", {
+            side: input.isUp ? "UP" : "DOWN",
+            reason: caught instanceof Error ? caught.message : String(caught),
+        });
+        return previewTradeWithinBudgetFastFallback(input);
+    }
+}
+
+async function previewTradeWithinBudgetFastFallback({
     client,
     sender,
     oracleId,
@@ -1071,13 +1609,15 @@ export async function previewTradeWithinBudgetFast({
     }
 
     const finalBest = best as BudgetedTradePreview;
-    console.info("Binary odds preview fast search", {
-        side: isUp ? "UP" : "DOWN",
-        attempts,
-        quantity: finalBest.quantity.toString(),
-        mintCost: finalBest.mintCost.toString(),
-        redeemPayout: finalBest.redeemPayout.toString(),
-    });
+    if (process.env.DEBUG_PREDICT === "1") {
+        console.info("Binary odds preview fast search", {
+            side: isUp ? "UP" : "DOWN",
+            attempts,
+            quantity: finalBest.quantity.toString(),
+            mintCost: finalBest.mintCost.toString(),
+            redeemPayout: finalBest.redeemPayout.toString(),
+        });
+    }
     return finalBest;
 }
 
@@ -1160,38 +1700,88 @@ export async function calculateQuantityWithinBudget({
     };
 }
 
-/**
- * Arena の players テーブルに playerAddress が登録済みかを PlayerJoined イベントで確認する。
- * ネットワークエラー時は false を返す（保守的）。
- */
+// Arena players テーブル ID のモジュールキャッシュ (初回取得後は RPC 不要)
+let cachedPlayersTableId: string | null = null;
+
+async function fetchPlayersTableId(): Promise<string | null> {
+    if (cachedPlayersTableId) return cachedPlayersTableId;
+    try {
+        const response = await fetch(PREDICT_BINARY_CONFIG.fullnodeJsonRpcUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+                jsonrpc: "2.0",
+                id: 1,
+                method: "sui_getObject",
+                params: [PREDICT_BINARY_CONFIG.arenaObjectId, { showContent: true }],
+            }),
+        });
+        if (!response.ok) return null;
+        const payload = (await response.json()) as unknown;
+        if (!isRecord(payload) || !isRecord(payload.result)) return null;
+        const data = isRecord(payload.result.data) ? payload.result.data : null;
+        const content = data && isRecord(data.content) ? data.content : null;
+        const fields = content && isRecord(content.fields) ? content.fields : null;
+        const players = fields && isRecord(fields.players) ? fields.players : null;
+        const playersFields = players && isRecord(players.fields) ? players.fields : null;
+        const playersIdObj = playersFields && isRecord(playersFields.id) ? playersFields.id : null;
+        const tableId =
+            playersIdObj && typeof playersIdObj.id === "string" ? playersIdObj.id : null;
+        if (tableId) cachedPlayersTableId = tableId;
+        return tableId;
+    } catch {
+        return null;
+    }
+}
+
 export async function checkArenaPlayerJoined(playerAddress: string): Promise<boolean> {
     try {
-        const eventType = `${PREDICT_BINARY_CONFIG.deepArenaPackageId}::events::PlayerJoined`;
-        const { events } = await queryMoveEvents({ eventType, maxPages: 5, pageSize: 50 });
-        const normalizedPlayer = playerAddress.toLowerCase();
-        const arenaId = PREDICT_BINARY_CONFIG.arenaObjectId.toLowerCase();
-        for (const event of events) {
-            if (!isRecord(event) || !isRecord(event.parsedJson)) continue;
-            const payload = event.parsedJson;
-            const player = typeof payload.player === "string" ? payload.player.toLowerCase() : "";
-            // arena_id は "0x..." or { id: "0x..." } のどちらにもなりうる
-            let eventArenaId = "";
-            if (typeof payload.arena_id === "string") {
-                eventArenaId = payload.arena_id.toLowerCase();
-            } else if (isRecord(payload.arena_id) && typeof payload.arena_id.id === "string") {
-                eventArenaId = (payload.arena_id.id as string).toLowerCase();
-            }
-            if (player === normalizedPlayer && eventArenaId === arenaId) {
-                return true;
-            }
-        }
-        return false;
+        const playersTableId = await fetchPlayersTableId();
+        if (!playersTableId) return false;
+        const response = await fetch(PREDICT_BINARY_CONFIG.fullnodeJsonRpcUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+                jsonrpc: "2.0",
+                id: 1,
+                method: "suix_getDynamicFieldObject",
+                params: [playersTableId, { type: "address", value: playerAddress }],
+            }),
+        });
+        if (!response.ok) return false;
+        const payload = (await response.json()) as unknown;
+        if (!isRecord(payload) || isRecord(payload.error)) return false;
+        const data = isRecord(payload.result) ? payload.result.data : null;
+        return isRecord(data);
     } catch {
         return false;
     }
 }
 
+// PredictManager の localStorage キャッシュ (キー: deeparena:predictManager:{address})
+const MANAGER_CACHE_KEY_PREFIX = "deeparena:predictManager:";
+
+export function saveCachedManagerId(address: string, managerId: string): void {
+    if (typeof window === "undefined") return;
+    try {
+        localStorage.setItem(`${MANAGER_CACHE_KEY_PREFIX}${address.toLowerCase()}`, managerId);
+    } catch {}
+}
+
+function readCachedManagerId(address: string): string | null {
+    if (typeof window === "undefined") return null;
+    try {
+        return localStorage.getItem(`${MANAGER_CACHE_KEY_PREFIX}${address.toLowerCase()}`);
+    } catch {
+        return null;
+    }
+}
+
 export async function findPredictManager(owner: string): Promise<string | null> {
+    const cached = readCachedManagerId(owner);
+    if (cached) return cached;
+
+    const managerCreatedType = `${PREDICT_BINARY_CONFIG.packageId}::predict_manager::PredictManagerCreated`;
     let cursor: unknown = null;
     for (let page = 0; page < 10; page += 1) {
         const response = await fetch(PREDICT_BINARY_CONFIG.fullnodeJsonRpcUrl, {
@@ -1200,11 +1790,9 @@ export async function findPredictManager(owner: string): Promise<string | null> 
             body: JSON.stringify({
                 jsonrpc: "2.0",
                 id: page + 1,
-                method: "suix_queryEvents",
+                method: "suix_queryTransactionBlocks",
                 params: [
-                    {
-                        MoveEventType: `${PREDICT_BINARY_CONFIG.packageId}::predict_manager::PredictManagerCreated`,
-                    },
+                    { filter: { FromAddress: owner }, options: { showEvents: true } },
                     cursor,
                     50,
                     true,
@@ -1212,7 +1800,7 @@ export async function findPredictManager(owner: string): Promise<string | null> 
             }),
         });
         if (!response.ok) {
-            throw new Error(`Manager event query failed: ${response.status}`);
+            throw new Error(`Manager TX query failed: ${response.status}`);
         }
         const payload = (await response.json()) as unknown;
         if (
@@ -1220,15 +1808,21 @@ export async function findPredictManager(owner: string): Promise<string | null> 
             !isRecord(payload.result) ||
             !Array.isArray(payload.result.data)
         ) {
-            throw new Error("Invalid manager event query response");
+            throw new Error("Invalid manager TX query response");
         }
-        for (const event of payload.result.data) {
-            if (!isRecord(event) || !isRecord(event.parsedJson)) {
-                continue;
-            }
-            const eventOwner = readString(event.parsedJson.owner, "owner").toLowerCase();
-            if (eventOwner === owner.toLowerCase()) {
-                return readString(event.parsedJson.manager_id, "manager_id");
+        for (const tx of payload.result.data) {
+            if (!isRecord(tx) || !Array.isArray(tx.events)) continue;
+            for (const event of tx.events) {
+                if (!isRecord(event) || !isRecord(event.parsedJson)) continue;
+                if (event.type !== managerCreatedType) continue;
+                const eventOwner =
+                    typeof event.parsedJson.owner === "string"
+                        ? event.parsedJson.owner.toLowerCase()
+                        : "";
+                if (eventOwner !== owner.toLowerCase()) continue;
+                const managerId = readString(event.parsedJson.manager_id, "manager_id");
+                saveCachedManagerId(owner, managerId);
+                return managerId;
             }
         }
         if (payload.result.hasNextPage !== true) {
@@ -1352,6 +1946,41 @@ interface QueryMoveEventsOptions {
     pageSize: number;
 }
 
+const EVENT_QUERY_MAX_ATTEMPTS = 3;
+const EVENT_QUERY_RETRY_BASE_DELAY_MS = 600;
+
+function delayMs(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchEventQueryPage(requestBody: string, eventType: string): Promise<unknown> {
+    let lastReason = "unknown";
+    for (let attempt = 1; attempt <= EVENT_QUERY_MAX_ATTEMPTS; attempt += 1) {
+        try {
+            const response = await fetch(PREDICT_BINARY_CONFIG.fullnodeJsonRpcUrl, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: requestBody,
+            });
+            if (response.ok) {
+                return (await response.json()) as unknown;
+            }
+            lastReason = `${response.status}`;
+            if (response.status !== 429 && response.status < 500) {
+                break;
+            }
+        } catch (caught) {
+            // fullnode のレートリミット応答には CORS ヘッダが付かないため、
+            // ブラウザでは fetch 自体が "Failed to fetch" で reject する。リトライ対象にする。
+            lastReason = caught instanceof Error ? caught.message : String(caught);
+        }
+        if (attempt < EVENT_QUERY_MAX_ATTEMPTS) {
+            await delayMs(EVENT_QUERY_RETRY_BASE_DELAY_MS * attempt);
+        }
+    }
+    throw new Error(`Event query failed for ${eventType}: ${lastReason}`);
+}
+
 async function queryMoveEvents({ eventType, maxPages, pageSize }: QueryMoveEventsOptions): Promise<{
     events: unknown[];
     pagesRead: number;
@@ -1360,20 +1989,15 @@ async function queryMoveEvents({ eventType, maxPages, pageSize }: QueryMoveEvent
     const events: unknown[] = [];
     let cursor: unknown = null;
     for (let page = 0; page < maxPages; page += 1) {
-        const response = await fetch(PREDICT_BINARY_CONFIG.fullnodeJsonRpcUrl, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
+        const payload = await fetchEventQueryPage(
+            JSON.stringify({
                 jsonrpc: "2.0",
                 id: page + 1,
                 method: "suix_queryEvents",
                 params: [{ MoveEventType: eventType }, cursor, pageSize, true],
             }),
-        });
-        if (!response.ok) {
-            throw new Error(`Event query failed for ${eventType}: ${response.status}`);
-        }
-        const payload = (await response.json()) as unknown;
+            eventType,
+        );
         if (
             !isRecord(payload) ||
             !isRecord(payload.result) ||
