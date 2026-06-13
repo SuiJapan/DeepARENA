@@ -21,7 +21,7 @@ export function createPlpSandboxTransaction({
             : coinWithBalance({ balance: amount, type: PLP_SANDBOX_CONFIG.plpCoinType });
 
     if (action === "supply") {
-        tx.moveCall({
+        const [plpCoin] = tx.moveCall({
             target: `${PLP_SANDBOX_CONFIG.sandboxPackageId}::plp_sandbox::provide_liquidity`,
             typeArguments: [PLP_SANDBOX_CONFIG.dusdcCoinType],
             arguments: [
@@ -30,6 +30,7 @@ export function createPlpSandboxTransaction({
                 tx.object(PLP_SANDBOX_CONFIG.clockObjectId),
             ],
         });
+        tx.transferObjects([plpCoin], tx.pure.address(sender));
     } else {
         const [withdrawnCoin] = tx.moveCall({
             target: `${PLP_SANDBOX_CONFIG.sandboxPackageId}::plp_sandbox::withdraw_liquidity`,
