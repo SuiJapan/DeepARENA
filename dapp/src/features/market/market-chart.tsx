@@ -18,6 +18,8 @@ const timeFormatter = new Intl.DateTimeFormat(undefined, {
     timeZoneName: "short",
 });
 
+const chartAxisSlots = ["start", "middle", "end"] as const;
+
 function rawPriceToNumber(raw: string | null): number | null {
     if (raw === null) {
         return null;
@@ -139,16 +141,23 @@ export function MarketChart({
                     ) : null}
                 </svg>
                 <div className="chart-axis">
-                    {(history.length > 0
-                        ? [history[0], history[Math.floor(history.length / 2)], history.at(-1)]
-                        : []
-                    ).map((point) => (
-                        <span key={`${point?.digest ?? "empty"}:${point?.onchainTimestampMs ?? 0}`}>
-                            {point
-                                ? timeFormatter.format(new Date(point.onchainTimestampMs))
-                                : "--"}
-                        </span>
-                    ))}
+                    {chartAxisSlots.map((slot, index) => {
+                        const point =
+                            history.length > 0
+                                ? [
+                                      history[0],
+                                      history[Math.floor(history.length / 2)],
+                                      history.at(-1),
+                                  ][index]
+                                : null;
+                        return (
+                            <span key={slot}>
+                                {point
+                                    ? timeFormatter.format(new Date(point.onchainTimestampMs))
+                                    : "--"}
+                            </span>
+                        );
+                    })}
                 </div>
             </div>
         </section>
