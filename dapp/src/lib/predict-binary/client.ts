@@ -1,6 +1,11 @@
 import { bcs } from "@mysten/sui/bcs";
 import type { SuiClientTypes } from "@mysten/sui/client";
 import type { Transaction } from "@mysten/sui/transactions";
+import {
+    buildPreviewCandidateQuantities,
+    buildVerificationQuantities,
+    selectBestBudgetedPreview,
+} from "./budget-search.ts";
 import { PREDICT_BINARY_CONFIG } from "./config.ts";
 import { readSuiEventPayload } from "./events.ts";
 import {
@@ -745,68 +750,6 @@ export async function previewRangeWithinBudgetServerOnly({
         mintCost: preview.mintCost,
         redeemPayout: preview.redeemPayout,
     };
-}
-
-function uniquePositiveQuantities(values: bigint[]): bigint[] {
-    const seen = new Set<string>();
-    const quantities: bigint[] = [];
-    for (const value of values) {
-        if (value <= 0n) {
-            continue;
-        }
-        const key = value.toString();
-        if (seen.has(key)) {
-            continue;
-        }
-        seen.add(key);
-        quantities.push(value);
-    }
-    return quantities;
-}
-
-function buildPreviewCandidateQuantities(budget: bigint): bigint[] {
-    return uniquePositiveQuantities([budget, (budget * 3n) / 4n, budget / 2n, budget / 4n, 1n]);
-}
-
-function buildVerificationQuantities({
-    budget,
-    candidates,
-}: {
-    budget: bigint;
-    candidates: TradeAmountsPreview[];
-}): bigint[] {
-    const priced = candidates.filter((candidate) => candidate.mintCost > 0n);
-    if (priced.length === 0) {
-        return [];
-    }
-    const anchor = priced.reduce((best, candidate) => {
-        const bestDistance =
-            best.mintCost > budget ? best.mintCost - budget : budget - best.mintCost;
-        const candidateDistance =
-            candidate.mintCost > budget ? candidate.mintCost - budget : budget - candidate.mintCost;
-        return candidateDistance < bestDistance ? candidate : best;
-    });
-    const estimated = (budget * anchor.quantity) / anchor.mintCost;
-    return uniquePositiveQuantities([estimated, estimated - 1n, estimated + 1n]);
-}
-
-interface TradeAmountsPreview extends TradeAmounts {
-    quantity: bigint;
-}
-
-function selectBestBudgetedPreview<T extends TradeAmountsPreview>(
-    budget: bigint,
-    candidates: T[],
-): T | null {
-    return candidates.reduce<T | null>((best, candidate) => {
-        if (candidate.mintCost <= 0n || candidate.mintCost > budget) {
-            return best;
-        }
-        if (!best || candidate.quantity > best.quantity) {
-            return candidate;
-        }
-        return best;
-    }, null);
 }
 
 async function previewRangeBatchTradeAmounts({
