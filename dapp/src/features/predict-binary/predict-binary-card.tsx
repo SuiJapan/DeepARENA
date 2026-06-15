@@ -52,7 +52,7 @@ export function PredictBinaryCard({
                     data-active={direction === "UP"}
                     aria-pressed={direction === "UP"}
                     disabled={inputDisabled}
-                    onClick={() => setDirection("UP")}
+                    onClick={() => setDirection(direction === "UP" ? null : "UP")}
                 >
                     <span>UP</span>
                     <strong>{binary.upOdds}</strong>
@@ -63,7 +63,7 @@ export function PredictBinaryCard({
                     data-active={direction === "DOWN"}
                     aria-pressed={direction === "DOWN"}
                     disabled={inputDisabled}
-                    onClick={() => setDirection("DOWN")}
+                    onClick={() => setDirection(direction === "DOWN" ? null : "DOWN")}
                 >
                     <span>DOWN</span>
                     <strong>{binary.downOdds}</strong>
@@ -122,11 +122,7 @@ export function PredictBinaryCard({
                 disabled={!canEnter}
                 onClick={() => direction && void binary.placeBet(direction)}
             >
-                {isBettingOpen
-                    ? direction
-                        ? direction.toLowerCase()
-                        : "select"
-                    : "BETTING CLOSED"}
+                {isBettingOpen ? (direction ? `ENTER ${direction}` : "select") : "BETTING CLOSED"}
             </button>
 
             <div className="binary-entry-status" aria-live="polite">

@@ -186,7 +186,7 @@ function NextRangeRoundCard({ roundMarket }: { roundMarket: PredictRoundMarket |
                     data-active={range.direction === "RANGE"}
                     aria-pressed={range.direction === "RANGE"}
                     disabled={!range.isBettingOpen}
-                    onClick={() => range.setDirection("RANGE")}
+                    onClick={() => range.setDirection(range.direction === "RANGE" ? null : "RANGE")}
                 >
                     <span>RANGE</span>
                     <strong>{range.rangeOdds}</strong>
@@ -197,7 +197,7 @@ function NextRangeRoundCard({ roundMarket }: { roundMarket: PredictRoundMarket |
                     data-active={range.direction === "BREAK"}
                     aria-pressed={range.direction === "BREAK"}
                     disabled={!range.isBettingOpen}
-                    onClick={() => range.setDirection("BREAK")}
+                    onClick={() => range.setDirection(range.direction === "BREAK" ? null : "BREAK")}
                 >
                     <span>BREAK</span>
                     <strong>{range.breakOdds}</strong>
@@ -249,7 +249,11 @@ function NextRangeRoundCard({ roundMarket }: { roundMarket: PredictRoundMarket |
                 disabled={!range.canEnter}
                 onClick={() => void range.placeRangeBet()}
             >
-                Enter Range
+                {range.isBettingOpen
+                    ? range.direction
+                        ? `ENTER ${range.direction}`
+                        : "select"
+                    : "BETTING CLOSED"}
             </button>
             <div className="binary-entry-status" aria-live="polite">
                 {range.activePositionDirection && range.activePositionCostLabel ? (

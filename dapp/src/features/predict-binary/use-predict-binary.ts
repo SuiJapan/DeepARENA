@@ -44,6 +44,7 @@ import {
     createRedeemBinaryTransaction,
     describeCreatePredictManagerMoveCalls,
     describeMintBinaryMoveCalls,
+    maxStakeWithinDeposit,
 } from "@/src/lib/predict-binary/transactions";
 import { isWalletUserRejection, readWalletCancellationDebug } from "@/src/lib/wallet-errors";
 
@@ -522,6 +523,20 @@ export function usePredictBinary(
     const isBettingOpen = roundMarket?.state === "BETTING_OPEN";
     const oracleTimestampMs = roundMarket?.currentOracle?.timestampMs ?? null;
 
+    // 入力(=目標掛け金)を、デポジット(maxTotalCost)が残高に収まる範囲へ自動的に引き下げる。
+    // 残高未取得(capacity=0)の間はキャップせず、取得後に preview が再計算される。
+    const capBudgetToDepositCapacity = useCallback(
+        (rawBudget: bigint): bigint => {
+            const capacity = walletBalance + managerBalance;
+            if (rawBudget <= 0n || capacity <= 0n) {
+                return rawBudget;
+            }
+            const maxStake = maxStakeWithinDeposit(capacity, PREDICT_BINARY_CONFIG.feeBps);
+            return rawBudget < maxStake ? rawBudget : maxStake;
+        },
+        [walletBalance, managerBalance],
+    );
+
     useEffect(() => {
         previewContextRef.current = { oracleTimestampMs, spotTimestampMs };
     }, [oracleTimestampMs, spotTimestampMs]);
@@ -648,6 +663,7 @@ export function usePredictBinary(
                 resetPreviews(status);
                 return;
             }
+            budget = capBudgetToDepositCapacity(budget);
 
             const previewKey = buildBinaryPreviewRequestKey({
                 walletAddress: address,
@@ -845,7 +861,7 @@ export function usePredictBinary(
                 });
             }
         },
-        [address, amount, isBettingOpen, isTestnet, market],
+        [address, amount, capBudgetToDepositCapacity, isBettingOpen, isTestnet, market],
     );
 
     useEffect(() => {
@@ -891,6 +907,8 @@ export function usePredictBinary(
                 setMessage(readErrorMessage(caught));
                 return;
             }
+            // 目標掛け金をデポジットが残高に収まる範囲へ自動引き下げ（preview と同一ロジック）。
+            budget = capBudgetToDepositCapacity(budget);
             const expectedPreviewKey = buildPreviewApiKey({
                 market: lockedMarket,
                 budget,
@@ -1347,6 +1365,7 @@ export function usePredictBinary(
         [
             address,
             amount,
+            capBudgetToDepositCapacity,
             client,
             dAppKit,
             hasJoinedArena,

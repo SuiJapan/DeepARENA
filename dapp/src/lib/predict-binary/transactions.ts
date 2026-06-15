@@ -26,6 +26,31 @@ export function calcMaxTotalCost(mintCost: bigint, feeBps: number): bigint {
     return base + (base + 9n) / 10n; // +10% buffer (round up)
 }
 
+/**
+ * 入金可能額(depositCapacity = ウォレット残高 + マネージャー残高)に収まる
+ * 最大の掛け金(mintCost 目標)を求める。
+ * calcMaxTotalCost(stake) <= depositCapacity を満たす最大 stake を二分探索する。
+ * 入力を「上限」ではなく「目標」として扱う際、残高超過で BET が失敗しないよう
+ * 目標額を自動的に引き下げるために使う。
+ */
+export function maxStakeWithinDeposit(depositCapacity: bigint, feeBps: number): bigint {
+    if (depositCapacity <= 0n) {
+        return 0n;
+    }
+    // calcMaxTotalCost(stake) >= stake なので、上限は depositCapacity で十分。
+    let low = 0n;
+    let high = depositCapacity;
+    while (low < high) {
+        const mid = (low + high + 1n) / 2n;
+        if (calcMaxTotalCost(mid, feeBps) <= depositCapacity) {
+            low = mid;
+        } else {
+            high = mid - 1n;
+        }
+    }
+    return low;
+}
+
 export interface BinaryMarketKeyInput {
     oracleId: string;
     expiryMs: number;

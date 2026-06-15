@@ -19,6 +19,7 @@ import {
     readManagerCreatedEvent,
     readPositionMintedEvent,
     readRangeMintedEvent,
+    readWalletQuoteBalance,
 } from "@/src/lib/predict-binary/client";
 import { PREDICT_BINARY_CONFIG } from "@/src/lib/predict-binary/config";
 import { formatBinaryOddsFromQuantity } from "@/src/lib/predict-binary/odds";
@@ -31,6 +32,7 @@ import {
     describeCreatePredictManagerMoveCalls,
     describeMintBreakMoveCalls,
     describeMintRangeMoveCalls,
+    maxStakeWithinDeposit,
 } from "@/src/lib/predict-binary/transactions";
 import {
     RANGE_WIDTH_CANDIDATES_TICKS,
@@ -930,7 +932,7 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
     const lastSuccessfulDisplayPreviewKeyRef = useRef<string | null>(null);
     const cooldownByDisplayPreviewKeyRef = useRef<Map<string, number>>(new Map());
     const rangeSelectionDebugKeyRef = useRef<string | null>(null);
-    const [direction, setDirection] = useState<RangeDirection>("RANGE");
+    const [direction, setDirection] = useState<RangeDirection | null>(null);
     const [amount, setAmount] = useState("10");
     const [previewState, setPreviewState] = useState<RangePreviewState>(emptyPreview("IDLE"));
     const [message, setMessage] = useState("Choose RANGE for the current BTC band.");
@@ -946,6 +948,7 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
         entryOdds: string | null;
     } | null>(null);
     const [hasJoinedArena, setHasJoinedArena] = useState(false);
+    const [walletBalance, setWalletBalance] = useState(0n);
 
     // ウォレット接続時にオンチェーンで参加済みか確認し、不要な join TX を防ぐ
     useEffect(() => {
@@ -957,6 +960,19 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
             if (joined) setHasJoinedArena(true);
         });
     }, [address, isTestnet]);
+
+    // 目標額の自動引き下げ用にウォレット DUSDC 残高を取得する
+    useEffect(() => {
+        if (!address || !isTestnet) {
+            setWalletBalance(0n);
+            return;
+        }
+        void readWalletQuoteBalance(client, address)
+            .then(setWalletBalance)
+            .catch(() => {
+                // 取得失敗時はキャップせず（0 のまま＝従来挙動）
+            });
+    }, [address, isTestnet, client]);
 
     // ポートフォリオから現在ラウンドのアクティブ RANGE/BREAK ポジションを復元する
     const fetchActivePosition = useCallback(async () => {
@@ -1022,6 +1038,14 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
     } catch {
         budget = null;
     }
+    // 入力(=目標掛け金)を、デポジット(maxTotalCost)が残高に収まる範囲へ自動的に引き下げる。
+    // 残高未取得(0)の間はキャップせず従来挙動を維持する。
+    if (budget !== null && budget > 0n && walletBalance > 0n) {
+        const maxStake = maxStakeWithinDeposit(walletBalance, PREDICT_BINARY_CONFIG.feeBps);
+        if (budget > maxStake) {
+            budget = maxStake;
+        }
+    }
     const displayPreviewKey =
         address && baseMarket && rangeMarkets.length > 0 && budget !== null && budget > 0n
             ? buildCandidateSetPreviewKey({
@@ -1037,17 +1061,21 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
             ? buildDisplayPreviewKey({ address, market: selectedCandidate.market, budget })
             : null;
     const selectedDirectionPreview =
-        selectedCandidate && direction === "RANGE"
-            ? selectedCandidate.rangePreview
-            : selectedCandidate?.breakPreview;
+        direction === "RANGE"
+            ? selectedCandidate?.rangePreview
+            : direction === "BREAK"
+              ? selectedCandidate?.breakPreview
+              : undefined;
     const expectedPreviewKey =
-        selectedCandidate && address && budget !== null
+        direction !== null && selectedCandidate && address && budget !== null
             ? buildPreviewKey({ direction, address, market: selectedCandidate.market, budget })
             : null;
     const selectedPreviewKey =
-        selectedCandidate && direction === "RANGE"
-            ? selectedCandidate.rangePreviewKey
-            : selectedCandidate?.breakPreviewKey;
+        direction === "RANGE"
+            ? selectedCandidate?.rangePreviewKey
+            : direction === "BREAK"
+              ? selectedCandidate?.breakPreviewKey
+              : undefined;
     // PREVIEWING 中も旧オッズで BET 可能とする。bet callback が送信直前に fresh re-fetch を行う
     const previewReady =
         (previewState.status === "READY" || previewState.status === "PREVIEWING") &&
@@ -1056,6 +1084,7 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
         Boolean(address) &&
         isTestnet &&
         isBettingOpen &&
+        direction !== null &&
         Boolean(selectedCandidate) &&
         budget !== null &&
         budget > 0n &&
@@ -1399,6 +1428,7 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
         try {
             if (
                 !address ||
+                direction === null ||
                 !selectedCandidate ||
                 !selectedDirectionPreview ||
                 budget === null ||
