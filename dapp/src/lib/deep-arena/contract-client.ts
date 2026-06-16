@@ -138,17 +138,40 @@ const EVENT_PAGE_SIZE = 50;
 const OPENED_EVENT_MAX_PAGES = 40;
 const REDEEM_EVENT_MAX_PAGES = 100;
 
+const EVENT_QUERY_MAX_ATTEMPTS = 3;
+const EVENT_QUERY_RETRY_BASE_DELAY_MS = 400;
+
+function delayMs(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 1 ページ取得（429・一時障害はリトライ）。 */
+async function queryEventsPageWithRetry(eventType: string, cursor: unknown): Promise<unknown> {
+    let lastErr: unknown = null;
+    for (let attempt = 1; attempt <= EVENT_QUERY_MAX_ATTEMPTS; attempt++) {
+        try {
+            return await rpc("suix_queryEvents", [
+                { MoveEventType: eventType },
+                cursor,
+                EVENT_PAGE_SIZE,
+                false,
+            ]);
+        } catch (caught) {
+            lastErr = caught;
+            if (attempt < EVENT_QUERY_MAX_ATTEMPTS) {
+                await delayMs(EVENT_QUERY_RETRY_BASE_DELAY_MS * attempt);
+            }
+        }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(`queryEvents failed for ${eventType}`);
+}
+
 /** 単一 MoveEventType を昇順ページングで全件取得する。 */
 async function queryAllEvents(eventType: string, maxPages: number): Promise<unknown[]> {
     const items: unknown[] = [];
     let cursor: unknown = null;
     for (let page = 0; page < maxPages; page++) {
-        const result = await rpc("suix_queryEvents", [
-            { MoveEventType: eventType },
-            cursor,
-            EVENT_PAGE_SIZE,
-            false,
-        ]);
+        const result = await queryEventsPageWithRetry(eventType, cursor);
         if (!isRecord(result) || !Array.isArray(result.data)) break;
         items.push(...result.data);
         if (!result.hasNextPage) break;
@@ -251,10 +274,13 @@ export class ContractDeepArenaClient implements DeepArenaClient {
         const dynamicFields = await listDynamicFields(tableId);
         if (dynamicFields.length === 0) return [];
 
-        // 各プレイヤーの (address, managerId) を収集（オンチェーン score は使わない）。
+        // 各プレイヤーの (address, managerId) を収集。
+        // fallbackScore / fallbackCost はオンチェーンの値（PnL 再構築が失敗した場合のみ使う）。
         interface PlayerEntry {
             address: string;
             managerId: string;
+            fallbackScore: string;
+            fallbackCost: string;
         }
         const BATCH_SIZE = 50;
         const entries: PlayerEntry[] = [];
@@ -271,7 +297,24 @@ export class ContractDeepArenaClient implements DeepArenaClient {
                     const stats = isRecord(statsRaw) ? readFields(statsRaw, "player.stats") : null;
                     if (!stats) continue;
                     const managerId = readObjectId(stats.manager_id, "manager_id");
-                    entries.push({ address: playerAddress, managerId });
+                    let fallbackScore = "0";
+                    let fallbackCost = "0";
+                    try {
+                        fallbackScore = readU64(stats.score, "score");
+                    } catch {
+                        // 読めなければ 0 のまま
+                    }
+                    try {
+                        fallbackCost = readU64(stats.cumulative_cost, "cumulative_cost");
+                    } catch {
+                        // 読めなければ 0 のまま
+                    }
+                    entries.push({
+                        address: playerAddress,
+                        managerId,
+                        fallbackScore,
+                        fallbackCost,
+                    });
                 } catch {
                     // skip unreadable entries
                 }
@@ -280,25 +323,32 @@ export class ContractDeepArenaClient implements DeepArenaClient {
         if (entries.length === 0) return [];
 
         // 方針A: 確定イベントから PnL を再構築する（manager_id 小文字キー）。
-        const pnlByManager = await this.computePnlByManager();
+        // 重いイベントスキャンが失敗・上限超過しても、ランキング自体は必ず表示する
+        // （オンチェーン score へフォールバック）。
+        let pnlByManager: Awaited<ReturnType<typeof this.computePnlByManager>> | null = null;
+        try {
+            pnlByManager = await this.computePnlByManager();
+        } catch (caught) {
+            console.error("PnL reconstruction failed; falling back to on-chain score:", caught);
+            pnlByManager = null;
+        }
 
         const players: PlayerSummary[] = entries.map((entry) => {
-            const managerKey = entry.managerId.toLowerCase();
-            const result = pnlByManager.get(managerKey);
-            const pnl = result?.pnl ?? 0n;
-            const cost = result?.cost ?? 0n;
+            const result = pnlByManager?.get(entry.managerId.toLowerCase());
+            const scoreAtomic = result ? result.pnl.toString() : entry.fallbackScore;
+            const costAtomic = result ? result.cost.toString() : entry.fallbackCost;
             return {
                 address: entry.address,
                 displayName: `${entry.address.slice(0, 6)}...${entry.address.slice(-4)}`,
                 rank: 0,
                 score: {
                     // 負値もそのまま（符号付き文字列）。
-                    atomic: pnl.toString(),
+                    atomic: scoreAtomic,
                     decimals: this.config.quoteDecimals,
                     symbol: this.config.quoteSymbol,
                 },
                 deposited: {
-                    atomic: cost.toString(),
+                    atomic: costAtomic,
                     decimals: this.config.quoteDecimals,
                     symbol: this.config.quoteSymbol,
                 },
