@@ -1,6 +1,13 @@
 import type { DeepArenaClient } from "./client";
 import { type DeepArenaConfig, deepArenaMockConfig } from "./config";
 import { createMockDeepArenaClient } from "./mock-client";
+import {
+    binaryKey,
+    computePnl,
+    type OpenedContribution,
+    type RedeemContribution,
+    rangeKey,
+} from "./pnl-calculator";
 import type {
     ActionPreview,
     ArenaStatus,
@@ -124,6 +131,53 @@ async function listDynamicFields(parentId: string): Promise<DynamicFieldEntry[]>
     return entries;
 }
 
+// ===== PnL 再構築用イベント取得（方針A） =====
+
+const EVENT_PAGE_SIZE = 50;
+// *Opened は arena 利用者のみ。redeem は Predict 全ユーザー横断のため母数が大きい。
+const OPENED_EVENT_MAX_PAGES = 40;
+const REDEEM_EVENT_MAX_PAGES = 100;
+
+/** 単一 MoveEventType を昇順ページングで全件取得する。 */
+async function queryAllEvents(eventType: string, maxPages: number): Promise<unknown[]> {
+    const items: unknown[] = [];
+    let cursor: unknown = null;
+    for (let page = 0; page < maxPages; page++) {
+        const result = await rpc("suix_queryEvents", [
+            { MoveEventType: eventType },
+            cursor,
+            EVENT_PAGE_SIZE,
+            false,
+        ]);
+        if (!isRecord(result) || !Array.isArray(result.data)) break;
+        items.push(...result.data);
+        if (!result.hasNextPage) break;
+        cursor = result.nextCursor;
+    }
+    return items;
+}
+
+function parsedJsonOf(item: unknown): Record<string, unknown> | null {
+    if (!isRecord(item)) return null;
+    const parsed = item.parsedJson ?? item.parsed_json;
+    return isRecord(parsed) ? parsed : null;
+}
+
+function eventTimestampMs(item: unknown): number {
+    if (!isRecord(item)) return 0;
+    const value = item.timestampMs;
+    if (typeof value === "string" && /^\d+$/.test(value)) return Number(value);
+    if (typeof value === "number" && Number.isSafeInteger(value)) return value;
+    return 0;
+}
+
+function eventDigest(item: unknown): string {
+    if (!isRecord(item)) return "";
+    const id = item.id;
+    if (isRecord(id) && typeof id.txDigest === "string") return id.txDigest;
+    return "";
+}
+
 export class ContractDeepArenaClient implements DeepArenaClient {
     private readonly config: DeepArenaConfig;
     private readonly fallback: DeepArenaClient;
@@ -197,8 +251,13 @@ export class ContractDeepArenaClient implements DeepArenaClient {
         const dynamicFields = await listDynamicFields(tableId);
         if (dynamicFields.length === 0) return [];
 
+        // 各プレイヤーの (address, managerId) を収集（オンチェーン score は使わない）。
+        interface PlayerEntry {
+            address: string;
+            managerId: string;
+        }
         const BATCH_SIZE = 50;
-        const players: PlayerSummary[] = [];
+        const entries: PlayerEntry[] = [];
         for (let i = 0; i < dynamicFields.length; i += BATCH_SIZE) {
             const batch = dynamicFields.slice(i, i + BATCH_SIZE);
             const ids = batch.map((e) => e.objectId);
@@ -211,32 +270,42 @@ export class ContractDeepArenaClient implements DeepArenaClient {
                     const statsRaw = objFields.value;
                     const stats = isRecord(statsRaw) ? readFields(statsRaw, "player.stats") : null;
                     if (!stats) continue;
-
-                    const score = readU64(stats.score, "score");
                     const managerId = readObjectId(stats.manager_id, "manager_id");
-
-                    players.push({
-                        address: playerAddress,
-                        displayName: `${playerAddress.slice(0, 6)}...${playerAddress.slice(-4)}`,
-                        rank: 0,
-                        score: {
-                            atomic: score,
-                            decimals: this.config.quoteDecimals,
-                            symbol: this.config.quoteSymbol,
-                        },
-                        deposited: {
-                            atomic: readU64(stats.cumulative_cost, "cumulative_cost"),
-                            decimals: this.config.quoteDecimals,
-                            symbol: this.config.quoteSymbol,
-                        },
-                        predictManagerId: managerId,
-                        isCurrentPlayer: false,
-                    });
+                    entries.push({ address: playerAddress, managerId });
                 } catch {
                     // skip unreadable entries
                 }
             }
         }
+        if (entries.length === 0) return [];
+
+        // 方針A: 確定イベントから PnL を再構築する（manager_id 小文字キー）。
+        const pnlByManager = await this.computePnlByManager();
+
+        const players: PlayerSummary[] = entries.map((entry) => {
+            const managerKey = entry.managerId.toLowerCase();
+            const result = pnlByManager.get(managerKey);
+            const pnl = result?.pnl ?? 0n;
+            const cost = result?.cost ?? 0n;
+            return {
+                address: entry.address,
+                displayName: `${entry.address.slice(0, 6)}...${entry.address.slice(-4)}`,
+                rank: 0,
+                score: {
+                    // 負値もそのまま（符号付き文字列）。
+                    atomic: pnl.toString(),
+                    decimals: this.config.quoteDecimals,
+                    symbol: this.config.quoteSymbol,
+                },
+                deposited: {
+                    atomic: cost.toString(),
+                    decimals: this.config.quoteDecimals,
+                    symbol: this.config.quoteSymbol,
+                },
+                predictManagerId: entry.managerId,
+                isCurrentPlayer: false,
+            };
+        });
 
         players.sort((a, b) => {
             const diff = BigInt(b.score.atomic) - BigInt(a.score.atomic);
@@ -247,6 +316,151 @@ export class ContractDeepArenaClient implements DeepArenaClient {
         });
 
         return players;
+    }
+
+    /**
+     * 確定イベントから manager 単位の PnL を再構築する（方針A）。
+     * 戻り値のキーは manager_id（小文字）。
+     */
+    private async computePnlByManager() {
+        const { deepArenaPackageId, deepArenaPreviousPackageIds, predictPackageId, arenaObjectId } =
+            this.config;
+
+        const arenaPkgIds = [...new Set([deepArenaPackageId, ...deepArenaPreviousPackageIds])];
+
+        // *Opened（旧+新パッケージ × 3 種）と redeem（Predict × 2 種）を並列取得。
+        const openedQueries = arenaPkgIds.flatMap((pkg) =>
+            (["BinaryOpened", "RangeOpened", "BreakOpened"] as const).map((kind) => ({
+                pkg,
+                kind,
+                type: `${pkg}::events::${kind}`,
+            })),
+        );
+        const redeemQueries = (["PositionRedeemed", "RangeRedeemed"] as const).map((kind) => ({
+            kind,
+            type: `${predictPackageId}::predict::${kind}`,
+        }));
+
+        const [openedResults, redeemResults] = await Promise.all([
+            Promise.all(
+                openedQueries.map(async (q) => ({
+                    kind: q.kind,
+                    items: await queryAllEvents(q.type, OPENED_EVENT_MAX_PAGES),
+                })),
+            ),
+            Promise.all(
+                redeemQueries.map(async (q) => ({
+                    kind: q.kind,
+                    items: await queryAllEvents(q.type, REDEEM_EVENT_MAX_PAGES),
+                })),
+            ),
+        ]);
+
+        const opened: OpenedContribution[] = [];
+        for (const { kind, items } of openedResults) {
+            for (const item of items) {
+                const parsed = parsedJsonOf(item);
+                if (!parsed) continue;
+                try {
+                    if (readObjectId(parsed.arena_id, "arena_id") !== arenaObjectId) continue;
+                    const managerId = readObjectId(parsed.manager_id, "manager_id").toLowerCase();
+                    const oracleId = readObjectId(parsed.oracle_id, "oracle_id");
+                    const expiry = BigInt(readU64(parsed.expiry, "expiry"));
+                    const quantity = BigInt(readU64(parsed.quantity, "quantity"));
+                    const cost = BigInt(readU64(parsed.cost, "cost"));
+                    const fee = BigInt(readU64(parsed.fee, "fee"));
+
+                    if (kind === "BinaryOpened") {
+                        const strike = BigInt(readU64(parsed.strike, "strike"));
+                        const isUp = parsed.is_up === true;
+                        opened.push({
+                            managerId,
+                            cost,
+                            fee,
+                            binary: [
+                                { keyStr: binaryKey(oracleId, expiry, strike, isUp), quantity },
+                            ],
+                            range: [],
+                        });
+                    } else if (kind === "RangeOpened") {
+                        const lower = BigInt(readU64(parsed.lower_strike, "lower_strike"));
+                        const higher = BigInt(readU64(parsed.higher_strike, "higher_strike"));
+                        opened.push({
+                            managerId,
+                            cost,
+                            fee,
+                            binary: [],
+                            range: [
+                                { keyStr: rangeKey(oracleId, expiry, lower, higher), quantity },
+                            ],
+                        });
+                    } else {
+                        // BreakOpened: lower_strike を DOWN、upper_strike を UP の 2 binary レッグへ。
+                        const lower = BigInt(readU64(parsed.lower_strike, "lower_strike"));
+                        const upper = BigInt(readU64(parsed.upper_strike, "upper_strike"));
+                        opened.push({
+                            managerId,
+                            cost,
+                            fee,
+                            binary: [
+                                { keyStr: binaryKey(oracleId, expiry, lower, false), quantity },
+                                { keyStr: binaryKey(oracleId, expiry, upper, true), quantity },
+                            ],
+                            range: [],
+                        });
+                    }
+                } catch {
+                    // skip unreadable event
+                }
+            }
+        }
+
+        const redeemed: RedeemContribution[] = [];
+        for (const { kind, items } of redeemResults) {
+            for (const item of items) {
+                const parsed = parsedJsonOf(item);
+                if (!parsed) continue;
+                try {
+                    const managerId = readObjectId(parsed.manager_id, "manager_id").toLowerCase();
+                    const oracleId = readObjectId(parsed.oracle_id, "oracle_id");
+                    const expiry = BigInt(readU64(parsed.expiry, "expiry"));
+                    const quantity = BigInt(readU64(parsed.quantity, "quantity"));
+                    const payout = BigInt(readU64(parsed.payout, "payout"));
+                    const timestampMs = eventTimestampMs(item);
+                    const tieBreak = eventDigest(item);
+
+                    if (kind === "PositionRedeemed") {
+                        const strike = BigInt(readU64(parsed.strike, "strike"));
+                        const isUp = parsed.is_up === true;
+                        redeemed.push({
+                            managerId,
+                            kind: "binary",
+                            keyStr: binaryKey(oracleId, expiry, strike, isUp),
+                            quantity,
+                            payout,
+                            timestampMs,
+                            tieBreak,
+                        });
+                    } else {
+                        const lower = BigInt(readU64(parsed.lower_strike, "lower_strike"));
+                        const higher = BigInt(readU64(parsed.higher_strike, "higher_strike"));
+                        redeemed.push({
+                            managerId,
+                            kind: "range",
+                            keyStr: rangeKey(oracleId, expiry, lower, higher),
+                            quantity,
+                            payout,
+                            timestampMs,
+                            tieBreak,
+                        });
+                    }
+                } catch {
+                    // skip unreadable event
+                }
+            }
+        }
+
+        return computePnl(opened, redeemed);
     }
 
     async listBinaryMarkets(): Promise<BinaryMarket[]> {

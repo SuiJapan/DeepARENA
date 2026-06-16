@@ -72,3 +72,37 @@ fun test_arena_fee_bps_accessor() {
     assert!(arena::fee_bps(&arena) == 300);
     arena::destroy_arena_for_testing(arena);
 }
+
+// ===== player_of_manager テスト =====
+
+#[test]
+fun test_player_of_manager_returns_correct_player() {
+    let ctx = &mut sui::tx_context::dummy();
+    let player = @0xA1;
+    let manager_id = object::id_from_address(@0xB1);
+
+    let mut arena = arena::create_arena_for_testing<DUSDC>(
+        object::id_from_address(@0xBB), 0, 100, 300, ctx,
+    );
+    arena::insert_player_for_testing(&mut arena, player, manager_id);
+
+    // player_of_manager が登録プレイヤーのアドレスを正しく返すこと
+    assert!(arena::player_of_manager(&arena, manager_id) == player);
+
+    arena::destroy_arena_for_testing(arena);
+}
+
+#[test]
+#[expected_failure(abort_code = 1)] // ENotPlayer = 1
+fun test_player_of_manager_aborts_for_unknown_manager() {
+    let ctx = &mut sui::tx_context::dummy();
+    let unknown_manager_id = object::id_from_address(@0xDEAD);
+
+    let arena = arena::create_arena_for_testing<DUSDC>(
+        object::id_from_address(@0xBB), 0, 100, 300, ctx,
+    );
+    // 未登録 manager_id → ENotPlayer で abort するはず
+    let _ = arena::player_of_manager(&arena, unknown_manager_id);
+
+    arena::destroy_arena_for_testing(arena);
+}

@@ -1,6 +1,7 @@
 [package]
 name = "deep_arena"
 edition = "2024"
+published-at = "0xfb6c60a5447e2ca878d89f989ca3395b784bc605a5eb82962526396a2bd7cc76"
 
 [dependencies]
 Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "718ae563a42fb4ba0d055588f81c704dcef58c25", override = true }
@@ -8,4 +9,4 @@ Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-fram
 deepbook_predict = { local = "vendor/deepbook_predict" }
 
 [addresses]
-deep_arena = "0x0"
+deep_arena = "0xfb6c60a5447e2ca878d89f989ca3395b784bc605a5eb82962526396a2bd7cc76"

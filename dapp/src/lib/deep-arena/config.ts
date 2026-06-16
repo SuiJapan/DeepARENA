@@ -11,6 +11,8 @@ export interface DeepArenaConfig {
     plpCoinType: string;
     predictServerUrl: string;
     deepArenaPackageId: string;
+    /** upgrade 前の旧 deep_arena パッケージ ID 群。過去 BET の *Opened イベント取得に使う。 */
+    deepArenaPreviousPackageIds: string[];
     arenaObjectId: string;
     feeBps: number;
 }
@@ -30,7 +32,14 @@ export const deepArenaMockConfig: DeepArenaConfig = {
     predictServerUrl: "https://predict-server.testnet.mystenlabs.com",
     deepArenaPackageId:
         process.env.NEXT_PUBLIC_DEEP_ARENA_PACKAGE_ID ??
-        "0xb3b546a75389e222acd043d4ce5a4d85b9a616ec55f98ede5e50d89b019a22aa",
+        "0xfb6c60a5447e2ca878d89f989ca3395b784bc605a5eb82962526396a2bd7cc76",
+    deepArenaPreviousPackageIds: (
+        process.env.NEXT_PUBLIC_DEEP_ARENA_PREVIOUS_PACKAGE_IDS ??
+        "0xb3b546a75389e222acd043d4ce5a4d85b9a616ec55f98ede5e50d89b019a22aa"
+    )
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
     arenaObjectId:
         process.env.NEXT_PUBLIC_ARENA_OBJECT_ID ??
         "0xdb259dd56458b3308dcd0536ced30e5145d1168dcd958539820e512686025bdf",

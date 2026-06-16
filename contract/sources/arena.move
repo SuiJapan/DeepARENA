@@ -116,7 +116,7 @@ public fun join_arena<Quote>(
     arena: &mut Arena<Quote>,
     manager: &PredictManager,
     clock: &Clock,
-    ctx: &mut TxContext,
+    ctx: &TxContext,
 ) {
     let player = ctx.sender();
     assert!(manager.owner() == player, ENotManagerOwner);
@@ -157,6 +157,16 @@ public(package) fun assert_player<Quote>(
 ) {
     assert!(arena.players.contains(player), ENotPlayer);
     assert!(arena.players[player].manager_id == manager_id, EManagerMismatch);
+}
+
+/// manager_id からそのマネージャーを登録したプレイヤーのアドレスを解決する。
+/// 未登録の manager_id の場合は ENotPlayer で abort する。
+public(package) fun player_of_manager<Quote>(
+    arena: &Arena<Quote>,
+    manager_id: ID,
+): address {
+    assert!(arena.manager_to_player.contains(manager_id), ENotPlayer);
+    arena.manager_to_player[manager_id]
 }
 
 /// PnL スコアを更新する。BET 時は cost_delta+fee_paid を渡し payout_delta=0。

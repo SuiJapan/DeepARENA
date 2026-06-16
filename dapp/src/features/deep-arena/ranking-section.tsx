@@ -22,7 +22,8 @@ function readTokenAmount(value: unknown): TokenAmount | null {
     const { atomic, decimals, symbol } = value;
     if (
         typeof atomic !== "string" ||
-        !/^\d+$/.test(atomic) ||
+        // PnL(score) は負値あり。deposited は非負だが同じ検証で問題ない。
+        !/^-?\d+$/.test(atomic) ||
         typeof decimals !== "number" ||
         typeof symbol !== "string"
     ) {

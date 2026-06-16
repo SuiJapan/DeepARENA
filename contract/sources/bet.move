@@ -94,10 +94,9 @@ public fun claim_binary<Quote>(
 ) {
     assert!(quantity > 0, EZeroQuantity);
     // CLAIM は arena の Active チェックをしない（期限後も可）。
-    // 参加登録のみ確認する。
-    let player = ctx.sender();
+    // manager の登録所有者を解決する（誰でも代行 CLAIM 可能）。
     let manager_id = object::id(manager);
-    arena::assert_player(arena, player, manager_id);
+    let player = arena::player_of_manager(arena, manager_id);
 
     // settled oracle を permissionless で redeem。payout が manager 残高に入る。
     let payout = predict_adapter::redeem_binary_permissionless<Quote>(
@@ -229,9 +228,9 @@ public fun claim_break<Quote>(
     ctx: &mut TxContext,
 ) {
     assert!(quantity > 0, EZeroQuantity);
-    let player = ctx.sender();
+    // manager の登録所有者を解決する（誰でも代行 CLAIM 可能）。
     let manager_id = object::id(manager);
-    arena::assert_player(arena, player, manager_id);
+    let player = arena::player_of_manager(arena, manager_id);
 
     let payout_low = predict_adapter::redeem_binary_permissionless<Quote>(
         predict, manager, oracle,
@@ -269,9 +268,9 @@ public fun claim_range<Quote>(
     ctx: &mut TxContext,
 ) {
     assert!(quantity > 0, EZeroQuantity);
-    let player = ctx.sender();
+    // manager の登録所有者を解決する（誰でも代行 CLAIM 可能）。
     let manager_id = object::id(manager);
-    arena::assert_player(arena, player, manager_id);
+    let player = arena::player_of_manager(arena, manager_id);
 
     let payout = predict_adapter::redeem_range<Quote>(
         predict, manager, oracle,
