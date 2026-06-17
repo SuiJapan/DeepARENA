@@ -1547,7 +1547,7 @@ export function usePredictBinary(
                 ? `${formatTokenAmount(lastRedeem.payout, PREDICT_BINARY_CONFIG.quoteDecimals)} DUSDC`
                 : null,
             explorerUrl: lastDigest ? predictBinaryExplorerUrl(lastDigest) : null,
-            feeBpsLabel: `現在手数料 ${PREDICT_BINARY_CONFIG.feeBps / 100}%`,
+            feeBpsLabel: `FEE ${PREDICT_BINARY_CONFIG.feeBps / 100}%`,
             placeBet,
         };
     }, [

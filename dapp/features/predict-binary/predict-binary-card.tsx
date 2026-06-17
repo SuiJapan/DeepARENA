@@ -4,6 +4,11 @@ import { useState } from "react";
 import type { PredictRoundMarket } from "@/features/predict-round/use-predict-round";
 import { type BinaryDirection, usePredictBinary } from "./use-predict-binary";
 
+function isCompactOddsLabel(value: string): boolean {
+    const normalized = value.trim().toLowerCase();
+    return !/\d/.test(normalized);
+}
+
 export function PredictBinaryCard({
     roundMarket,
     spotTimestampMs,
@@ -17,6 +22,7 @@ export function PredictBinaryCard({
     const canEnter =
         direction === "UP" ? binary.canBetUp : direction === "DOWN" ? binary.canBetDown : false;
     const isBettingOpen = roundMarket?.state === "BETTING_OPEN";
+    const isRoundLocked = roundMarket?.state === "FINAL_LIVE";
     const inputDisabled = binary.isBusy || !isBettingOpen;
 
     return (
@@ -40,7 +46,11 @@ export function PredictBinaryCard({
                 >
                     <span className="duel-sigil blade-sigil blade-sigil-up" aria-hidden="true" />
                     <span className="duel-name">UP</span>
-                    <span className="duel-odds">{binary.upOdds}</span>
+                    <span
+                        className={`duel-odds${isCompactOddsLabel(binary.upOdds) ? " duel-odds-status" : ""}`}
+                    >
+                        {binary.upOdds}
+                    </span>
                 </button>
                 <div className="duel-vs" aria-hidden="true">
                     VS
@@ -54,7 +64,11 @@ export function PredictBinaryCard({
                 >
                     <span className="duel-sigil blade-sigil blade-sigil-down" aria-hidden="true" />
                     <span className="duel-name">DOWN</span>
-                    <span className="duel-odds">{binary.downOdds}</span>
+                    <span
+                        className={`duel-odds${isCompactOddsLabel(binary.downOdds) ? " duel-odds-status" : ""}`}
+                    >
+                        {binary.downOdds}
+                    </span>
                 </button>
             </div>
 
@@ -84,7 +98,9 @@ export function PredictBinaryCard({
                         ? direction
                             ? `Enter ${direction}`
                             : "Select Direction"
-                        : "Betting Closed"}
+                        : isRoundLocked
+                          ? "Round Locked"
+                          : "Betting Closed"}
                 </button>
 
                 <p className="payout-line muted-line" aria-live="polite">

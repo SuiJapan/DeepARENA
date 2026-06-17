@@ -66,18 +66,6 @@ function shortId(value: string): string {
     return value.length > 18 ? `${value.slice(0, 8)}...${value.slice(-6)}` : value;
 }
 
-function formatUpdatedAt(ms: number): string {
-    return new Intl.DateTimeFormat("en-US", {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        timeZone: "Asia/Tokyo",
-        hour12: false,
-    }).format(new Date(ms));
-}
-
 export function RankingSection() {
     const account = useCurrentAccount();
     const address = account?.address?.toLowerCase() ?? null;
@@ -143,9 +131,15 @@ export function RankingSection() {
                     <div>
                         <h2 className="mini-title">Current Standings</h2>
                         <p className="mini-desc">
-                            {currentPlayer
-                                ? `Your Score: ${formatAmount(currentPlayer.score)}`
-                                : "Arena season standings"}
+                            {currentPlayer ? (
+                                <>
+                                    Your Score: {formatAmount(currentPlayer.score)}
+                                    <br />
+                                    Your Rank: {currentPlayer.rank}
+                                </>
+                            ) : (
+                                "Arena season standings"
+                            )}
                         </p>
                     </div>
                     <div className="ranking-title-side">
@@ -175,7 +169,7 @@ export function RankingSection() {
                                     address !== null && player.address.toLowerCase() === address;
                                 return (
                                     <article
-                                        className="ranking-row"
+                                        className={`ranking-row${isCurrent ? " current" : ""}`}
                                         key={player.address}
                                         data-current={isCurrent}
                                     >
@@ -232,11 +226,6 @@ export function RankingSection() {
                         ) : null}
                     </>
                 )}
-                <p className="port-footnote">
-                    Score is net PnL recorded onchain for Deep Arena bets.
-                    {state ? ` Updated ${formatUpdatedAt(state.fetchedAtMs)} JST.` : ""}
-                    {currentPlayer ? ` Your rank: ${currentPlayer.rank}.` : ""}
-                </p>
             </section>
         </div>
     );

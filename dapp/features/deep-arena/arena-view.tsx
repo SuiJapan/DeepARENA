@@ -34,6 +34,18 @@ function formatCloseLabel(ms: number | null): string {
     }).format(new Date(ms))} UTC`;
 }
 
+function formatRoundStateLabel(state: PredictRoundMarket["state"] | undefined): string {
+    if (state === "BETTING_OPEN") return "LIVE";
+    if (state === "FINAL_LIVE") return "Round Locked";
+    return state ?? "LIVE";
+}
+
+function isCompactOddsLabel(value: string | null): boolean {
+    if (value === null) return true;
+    const normalized = value.trim().toLowerCase();
+    return !/\d/.test(normalized);
+}
+
 function ModeCard({
     active,
     description,
@@ -68,6 +80,7 @@ function ModeCard({
 function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null }) {
     const range = usePredictRange(roundMarket);
     const selected = range.direction ?? "RANGE";
+    const isRoundLocked = roundMarket?.state === "FINAL_LIVE";
 
     return (
         <div className="panel-view active trade-view" data-panel="range">
@@ -77,7 +90,7 @@ function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null })
                     <h2 className="mode-title">Range Market</h2>
                     <p className="mode-copy">Pick a range or break before the round closes.</p>
                 </div>
-                <span className="fee-pill">Fee 3%</span>
+                <span className="fee-pill">FEE 3%</span>
             </div>
 
             <div className="range-band-card">
@@ -93,7 +106,11 @@ function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null })
                     onClick={() => range.setDirection(range.direction === "RANGE" ? null : "RANGE")}
                 >
                     <span className="duel-name">In Range</span>
-                    <span className="duel-odds">{range.rangeOdds}</span>
+                    <span
+                        className={`duel-odds${isCompactOddsLabel(range.rangeOdds) ? " duel-odds-status" : ""}`}
+                    >
+                        {range.rangeOdds}
+                    </span>
                 </button>
                 <div className="duel-vs" aria-hidden="true">
                     VS
@@ -105,14 +122,17 @@ function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null })
                     onClick={() => range.setDirection(range.direction === "BREAK" ? null : "BREAK")}
                 >
                     <span className="duel-name">Break</span>
-                    <span className="duel-odds">{range.breakOdds}</span>
+                    <span
+                        className={`duel-odds${isCompactOddsLabel(range.breakOdds) ? " duel-odds-status" : ""}`}
+                    >
+                        {range.breakOdds}
+                    </span>
                 </button>
             </div>
 
             <div className="stake-card">
                 <label htmlFor="range-stake">Your BET</label>
                 <div className="stake-input-row">
-                    <span>DUSDC</span>
                     <input
                         id="range-stake"
                         className="amount-input stake-input"
@@ -123,6 +143,7 @@ function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null })
                         disabled={!range.isBettingOpen}
                         onChange={(event) => range.setAmount(event.target.value)}
                     />
+                    <span>DUSDC</span>
                 </div>
                 <button
                     className="primary-button cta-full arena-cta"
@@ -134,7 +155,9 @@ function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null })
                         ? range.direction
                             ? `Enter ${range.direction === "RANGE" ? "Range Market" : "Break"}`
                             : "Select Range Side"
-                        : "Betting Closed"}
+                        : isRoundLocked
+                          ? "Round Locked"
+                          : "Betting Closed"}
                 </button>
                 <p className="payout-line muted-line" aria-live="polite">
                     {range.activePositionDirection && range.activePositionCostLabel
@@ -192,7 +215,7 @@ export function ArenaView({
                             </div>
                             <div className="cell-foot">
                                 <span>{formatCloseLabel(currentOracle?.expiryMs ?? null)}</span>
-                                <span>{predictRound.market?.state ?? "LIVE"}</span>
+                                <span>{formatRoundStateLabel(predictRound.market?.state)}</span>
                             </div>
                         </div>
                         <div className="live-cell">

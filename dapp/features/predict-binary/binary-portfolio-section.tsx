@@ -105,8 +105,6 @@ interface DisplayHistoryItem {
     settlementPriceLabel: string | null;
 }
 
-const MINTED_EVENT_MAX_PAGES = 40;
-const EVENT_PAGE_SIZE = 50;
 const HISTORY_PAGE_SIZE = 50;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -188,6 +186,15 @@ function formatDateTime(ms: number | null): string {
     const hour = parts.find((part) => part.type === "hour")?.value ?? "";
     const minute = parts.find((part) => part.type === "minute")?.value ?? "";
     return `${month} ${day} ${hour}:${minute}`;
+}
+
+function formatDateParts(ms: number | null): { date: string; time: string } {
+    const label = formatDateTime(ms);
+    const parts = label.split(" ");
+    if (parts.length < 3) {
+        return { date: label, time: "" };
+    }
+    return { date: `${parts[0]} ${parts[1]}`, time: parts[2] ?? "" };
 }
 
 function formatDUSDC(value: bigint): string {
@@ -460,6 +467,10 @@ function statusClass(status: BinaryPositionStatus): string {
         return "is-actionable";
     }
     return "";
+}
+
+function statusBadgeClass(status: BinaryPositionStatus | "Unknown"): string {
+    return `badge port-side status-badge status-${status.toLowerCase()}`;
 }
 
 function payoutLabel(position: PortfolioPosition | null): string {
@@ -1100,6 +1111,7 @@ export function BinaryPortfolioSection({
                     <div>
                         <span>BTC Binary</span>
                         <h2>Current Positions</h2>
+                        <p className="mini-desc">{currentDisplayPositions.length} open positions</p>
                     </div>
                     <button
                         type="button"
@@ -1123,77 +1135,51 @@ export function BinaryPortfolioSection({
                     </div>
                 ) : (
                     <div className="ranking-list">
-                        {currentDisplayPositions.map((position) => (
-                            <article className="ranking-row" key={position.key}>
-                                <div>
-                                    <span>Market</span>
-                                    <strong>BTC</strong>
-                                </div>
-                                <div>
-                                    <span>Type</span>
-                                    <strong>{position.type}</strong>
-                                </div>
-                                <div>
-                                    <span>Side</span>
-                                    <strong
-                                        className={`binary-side ${position.side.toLowerCase()}`}
-                                    >
-                                        {position.side}
-                                    </strong>
-                                </div>
-                                <div>
-                                    <span>Bet</span>
-                                    <strong>{formatDUSDC(position.totalCost)}</strong>
-                                </div>
-                                <div>
-                                    <span>Max Payout</span>
-                                    <strong>{formatDUSDC(position.totalQuantity)}</strong>
-                                </div>
-                                <div>
-                                    <span>Entry Odds</span>
-                                    <strong>
+                        {currentDisplayPositions.map((position, index) => (
+                            <article
+                                className={`ranking-row portfolio-row ${statusClass(position.status)}`}
+                                key={position.key}
+                            >
+                                <span className="rank-num">
+                                    {String(index + 1).padStart(2, "0")}
+                                </span>
+                                <div className="portfolio-main">
+                                    <div className="player-name">
+                                        BTC / DUSDC{" "}
+                                        <span className="port-type">{position.type}</span>
+                                    </div>
+                                    <span className="wallet">
+                                        Strike {position.strikeLabel} &nbsp;·&nbsp; Odds{" "}
                                         {formatBinaryOddsFromQuantity(
                                             position.totalQuantity,
                                             position.totalCost,
-                                        )}
-                                    </strong>
+                                        )}{" "}
+                                        &nbsp;·&nbsp; Ends {formatDateTime(position.expiryMs)}
+                                        &nbsp;·&nbsp; Max payout{" "}
+                                        {formatDUSDC(position.totalQuantity)}
+                                    </span>
                                 </div>
-                                <div>
-                                    <span>Strike</span>
-                                    <strong>{position.strikeLabel}</strong>
-                                </div>
-                                <div>
-                                    <span>Round ends</span>
-                                    <strong>{formatDateTime(position.expiryMs)}</strong>
-                                </div>
-                                <div>
-                                    <span>Status</span>
-                                    <strong>{displayStatus(position.status)}</strong>
+                                <div className="port-right">
+                                    <div className="score-value">
+                                        {formatDUSDC(position.totalCost)}
+                                    </div>
+                                    <div className="portfolio-badges">
+                                        <span
+                                            className={`badge port-side ${position.side.toLowerCase()}`}
+                                        >
+                                            {position.side}
+                                        </span>
+                                        {position.status !== "Open" ? (
+                                            <span className={statusBadgeClass(position.status)}>
+                                                {displayStatus(position.status)}
+                                            </span>
+                                        ) : null}
+                                    </div>
                                 </div>
                             </article>
                         ))}
                     </div>
                 )}
-                <p className="port-footnote">
-                    Current Positions are restored from fetched PositionMinted events. Query cap:{" "}
-                    {MINTED_EVENT_MAX_PAGES * EVENT_PAGE_SIZE} mint events
-                    {state
-                        ? `, ${state.mintedPagesRead} binary mint pages and ${state.rangePagesRead} range mint pages read`
-                        : ""}
-                    .
-                    {state?.mintedReachedLimit
-                        ? " Binary mint fetch limit reached; more binary history may exist."
-                        : ""}
-                    {state?.rangeReachedLimit
-                        ? " Range mint fetch limit reached; more range history may exist."
-                        : ""}
-                    {state?.redeemedReachedLimit
-                        ? " Redeem fetch limit reached; claim status may be incomplete."
-                        : ""}
-                    {error && state
-                        ? ` Last refresh failed (${error}); showing previously loaded data.`
-                        : ""}
-                </p>
                 {message ? <p className="port-footnote">{message}</p> : null}
             </section>
 
@@ -1202,15 +1188,15 @@ export function BinaryPortfolioSection({
                     <div>
                         <span>BTC Binary</span>
                         <h2>Your history</h2>
+                        <p className="mini-desc">
+                            {history.length} records · Page {safeHistoryPage} / {historyPageCount}
+                        </p>
                     </div>
                     <div className="port-right">
-                        <strong>
-                            {history.length} records · Page {safeHistoryPage} / {historyPageCount}
-                        </strong>
                         {totalManagerBalance > 0n ? (
                             <button
                                 type="button"
-                                className="tiny-button"
+                                className="tiny-button collect-button"
                                 disabled={isCollecting}
                                 title="Withdraw all DUSDC remaining in your PredictManager (slippage deposits and unclaimed payouts) to your wallet"
                                 onClick={() => void collectManagerBalances()}
@@ -1232,64 +1218,50 @@ export function BinaryPortfolioSection({
                             {pagedHistory.map((item) => {
                                 const position = item.binaryPosition;
                                 const isExpanded = expandedHistoryKeys.has(item.key);
+                                const date = formatDateParts(item.dateMs);
                                 return (
                                     <article
                                         key={item.key}
-                                        className={`ranking-row ${position ? statusClass(position.status) : ""}`}
+                                        className={`ranking-row portfolio-row history-row ${position ? statusClass(position.status) : statusClass(item.status as BinaryPositionStatus)}`}
                                     >
-                                        <div>
-                                            <span>Date</span>
-                                            <strong>{formatDateTime(item.dateMs)}</strong>
-                                        </div>
-                                        <div>
-                                            <span>Ended</span>
-                                            <strong>{formatDateTime(item.roundEndMs)}</strong>
-                                        </div>
-                                        <div>
-                                            <span>Type</span>
-                                            <strong>{item.type}</strong>
-                                        </div>
-                                        <div>
-                                            <span>Side</span>
-                                            <strong
-                                                className={`binary-side ${item.side.toLowerCase()}`}
-                                            >
-                                                {item.side}
-                                            </strong>
-                                        </div>
-                                        <div>
-                                            <span>Odds</span>
-                                            <strong>
+                                        <span className="rank-num port-date">
+                                            {date.date}
+                                            {date.time ? (
+                                                <>
+                                                    <br />
+                                                    {date.time}
+                                                </>
+                                            ) : null}
+                                        </span>
+                                        <div className="portfolio-main">
+                                            <div className="player-name">
+                                                {item.side}{" "}
+                                                <span className="port-type">{item.type}</span>
+                                            </div>
+                                            <span className="wallet">
+                                                Ended {formatDateTime(item.roundEndMs)}
+                                                &nbsp;·&nbsp; Odds{" "}
                                                 {formatBinaryOddsFromQuantity(
                                                     item.oddsQuantity,
                                                     item.oddsCost,
                                                 )}
-                                            </strong>
-                                        </div>
-                                        <div>
-                                            <span>Bet</span>
-                                            <strong>{formatDUSDC(item.betCost)}</strong>
-                                        </div>
-                                        <div>
-                                            <span>Payout</span>
-                                            <strong>{item.payoutLabel}</strong>
-                                        </div>
-                                        <div>
-                                            <span>Status</span>
-                                            <strong
-                                                className={`status-label status-${item.status.toLowerCase()}`}
-                                            >
-                                                {displayStatus(item.status)}
-                                            </strong>
+                                                &nbsp;·&nbsp; Bet {formatDUSDC(item.betCost)}
+                                            </span>
                                         </div>
                                         <div className="port-right">
-                                            <button
-                                                type="button"
-                                                className="tiny-button"
-                                                onClick={() => toggleHistoryExpand(item.key)}
-                                            >
-                                                {isExpanded ? "▲" : "▼"}
-                                            </button>
+                                            <div className="score-value">{item.payoutLabel}</div>
+                                            <div className="portfolio-badges">
+                                                <span className={statusBadgeClass(item.status)}>
+                                                    {displayStatus(item.status)}
+                                                </span>
+                                                <button
+                                                    type="button"
+                                                    className="tiny-button expand-button"
+                                                    onClick={() => toggleHistoryExpand(item.key)}
+                                                >
+                                                    {isExpanded ? "▲" : "▼"}
+                                                </button>
+                                            </div>
                                         </div>
                                         {isExpanded && (
                                             <div className="history-accordion">
@@ -1377,7 +1349,7 @@ export function BinaryPortfolioSection({
                                                     <div className="history-accordion-claim">
                                                         <button
                                                             type="button"
-                                                            className="tiny-button"
+                                                            className="tiny-button collect-button claim-button"
                                                             disabled={redeemingKey === position.key}
                                                             onClick={(e) => {
                                                                 e.stopPropagation();

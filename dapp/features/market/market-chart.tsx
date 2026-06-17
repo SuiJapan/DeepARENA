@@ -131,8 +131,9 @@ export function MarketChart({
                 <svg viewBox="0 0 800 260" role="img" aria-label="Live BTC price chart">
                     <defs>
                         <linearGradient id="chartFill" x1="0" x2="0" y1="0" y2="1">
-                            <stop offset="0%" stopColor="#31a98b" stopOpacity="0.28" />
-                            <stop offset="100%" stopColor="#31a98b" stopOpacity="0" />
+                            <stop offset="0%" stopColor="#998eff" stopOpacity="0.32" />
+                            <stop offset="72%" stopColor="#998eff" stopOpacity="0.06" />
+                            <stop offset="100%" stopColor="#998eff" stopOpacity="0" />
                         </linearGradient>
                     </defs>
                     {chart.fillPath ? <path className="chart-fill" d={chart.fillPath} /> : null}
