@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { warmBinaryPreviewCache } from "@/app/api/predict/binary-preview/route";
 import { PREDICT_BINARY_CONFIG } from "@/lib/predict-binary/config";
 import {
     buildSettlementRoundLock,
@@ -10,6 +9,7 @@ import {
     type PredictRoundStatus,
     selectCurrentBtcOracle,
 } from "@/lib/predict-round/round";
+import { warmBinaryPreviewCache } from "@/lib/server/predict/binary-preview";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
