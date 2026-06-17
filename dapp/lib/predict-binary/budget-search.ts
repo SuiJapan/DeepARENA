@@ -14,6 +14,10 @@ export interface BudgetedQuantityPreview {
     mintCost: bigint;
 }
 
+export type BudgetedQuantityPredicate<T extends BudgetedQuantityPreview> = (
+    candidate: T,
+) => boolean;
+
 export function uniquePositiveQuantities(values: bigint[]): bigint[] {
     const seen = new Set<string>();
     const quantities: bigint[] = [];
@@ -109,9 +113,14 @@ export function buildVerificationQuantities({
 export function selectBestBudgetedPreview<T extends BudgetedQuantityPreview>(
     budget: bigint,
     candidates: T[],
+    isCandidateMintable: BudgetedQuantityPredicate<T> = () => true,
 ): T | null {
     return candidates.reduce<T | null>((best, candidate) => {
-        if (candidate.mintCost <= 0n || candidate.mintCost > budget) {
+        if (
+            candidate.mintCost <= 0n ||
+            candidate.mintCost > budget ||
+            !isCandidateMintable(candidate)
+        ) {
             return best;
         }
         if (!best || candidate.quantity > best.quantity) {

@@ -108,6 +108,19 @@ test("returns no verification quantities when there are no priced candidates", (
     assert.deepEqual(buildVerificationQuantities({ budget: 1_000_000n, candidates: [] }), []);
 });
 
+test("selectBestBudgetedPreview ignores candidates rejected by mintability predicate", () => {
+    const candidates = [
+        { quantity: 1n, mintCost: 100n },
+        { quantity: 2n, mintCost: 200n },
+        { quantity: 3n, mintCost: 300n },
+    ];
+
+    assert.deepEqual(
+        selectBestBudgetedPreview(1_000n, candidates, (candidate) => candidate.quantity < 3n),
+        { quantity: 2n, mintCost: 200n },
+    );
+});
+
 test("all verification quantities stay strictly inside the bracket", () => {
     const budget = 1_000_000n;
     const cost = makeConvexCost(0.5, 0.5);

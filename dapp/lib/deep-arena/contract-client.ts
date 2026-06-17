@@ -183,6 +183,14 @@ export class ContractDeepArenaClient implements DeepArenaClient {
     }
 
     async listPlayers(): Promise<PlayerSummary[]> {
+        // 獲得額（cumulative_payout）ランキングのため、各プレイヤーの PlayerStats を
+        // テーブルから直接読む。オンチェーン Top キャッシュ（LeaderboardEntry）は
+        // cumulative_payout を保持しないため、この指標では使用しない。
+        return this.listPlayersFromTable();
+    }
+
+    /** players テーブル全件を読み、獲得額（payout）降順・Total Bet 降順で並べる。 */
+    private async listPlayersFromTable(): Promise<PlayerSummary[]> {
         const arenaFields = await getObjectFields(this.config.arenaObjectId);
 
         // Table<address, PlayerStats> → { fields: { id: { id: "0xTABLE_ID" }, size: "N" } }
@@ -212,7 +220,9 @@ export class ContractDeepArenaClient implements DeepArenaClient {
                     const stats = isRecord(statsRaw) ? readFields(statsRaw, "player.stats") : null;
                     if (!stats) continue;
 
-                    const score = readU64(stats.score, "score");
+                    // ランキング指標は獲得額（cumulative_payout）。Total Bet は cumulative_cost。
+                    const payout = readU64(stats.cumulative_payout, "cumulative_payout");
+                    const cost = readU64(stats.cumulative_cost, "cumulative_cost");
                     const managerId = readObjectId(stats.manager_id, "manager_id");
 
                     players.push({
@@ -220,12 +230,12 @@ export class ContractDeepArenaClient implements DeepArenaClient {
                         displayName: `${playerAddress.slice(0, 6)}...${playerAddress.slice(-4)}`,
                         rank: 0,
                         score: {
-                            atomic: score,
+                            atomic: payout,
                             decimals: this.config.quoteDecimals,
                             symbol: this.config.quoteSymbol,
                         },
                         deposited: {
-                            atomic: readU64(stats.cumulative_cost, "cumulative_cost"),
+                            atomic: cost,
                             decimals: this.config.quoteDecimals,
                             symbol: this.config.quoteSymbol,
                         },
@@ -239,8 +249,11 @@ export class ContractDeepArenaClient implements DeepArenaClient {
         }
 
         players.sort((a, b) => {
-            const diff = BigInt(b.score.atomic) - BigInt(a.score.atomic);
-            return diff > 0n ? 1 : diff < 0n ? -1 : 0;
+            // 獲得額（payout）降順 → 同額は Total Bet（cumulative_cost）降順。
+            const byPayout = BigInt(b.score.atomic) - BigInt(a.score.atomic);
+            if (byPayout !== 0n) return byPayout > 0n ? 1 : -1;
+            const byBet = BigInt(b.deposited.atomic) - BigInt(a.deposited.atomic);
+            return byBet > 0n ? 1 : byBet < 0n ? -1 : 0;
         });
         players.forEach((p, i) => {
             p.rank = i + 1;

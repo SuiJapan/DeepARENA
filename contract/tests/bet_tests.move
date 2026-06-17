@@ -72,3 +72,128 @@ fun test_arena_fee_bps_accessor() {
     assert!(arena::fee_bps(&arena) == 300);
     arena::destroy_arena_for_testing(arena);
 }
+
+// ===== player_of_manager =====
+
+#[test]
+fun test_player_of_manager_returns_correct_player() {
+    let ctx = &mut sui::tx_context::dummy();
+    let mut arena = arena::create_arena_for_testing<DUSDC>(
+        object::id_from_address(@0xBB), 0, 100, 300, ctx,
+    );
+    let player = @0xA1;
+    let manager_id = object::id_from_address(@0xD1);
+    arena::insert_player_for_testing(&mut arena, player, manager_id);
+
+    assert!(arena::player_of_manager(&arena, manager_id) == player);
+    arena::destroy_arena_for_testing(arena);
+}
+
+#[test]
+#[expected_failure(abort_code = 1, location = deep_arena::arena)]
+fun test_player_of_manager_aborts_for_unknown_manager() {
+    let ctx = &mut sui::tx_context::dummy();
+    let arena = arena::create_arena_for_testing<DUSDC>(
+        object::id_from_address(@0xBB), 0, 100, 300, ctx,
+    );
+    // 未登録 manager_id → ENotPlayer (=1) で abort。
+    arena::player_of_manager(&arena, object::id_from_address(@0xDEAD));
+    arena::destroy_arena_for_testing(arena);
+}
+
+// ===== Top キャッシュ（オンチェーンランキング） =====
+
+#[test]
+fun test_leaderboard_orders_by_score_desc() {
+    let ctx = &mut sui::tx_context::dummy();
+    let mut arena = arena::create_arena_for_testing<DUSDC>(
+        object::id_from_address(@0xBB), 0, 100, 300, ctx,
+    );
+    let (pa, pb, pc) = (@0xA1, @0xB2, @0xC3);
+    arena::insert_player_for_testing(&mut arena, pa, object::id_from_address(@0xD1));
+    arena::insert_player_for_testing(&mut arena, pb, object::id_from_address(@0xD2));
+    arena::insert_player_for_testing(&mut arena, pc, object::id_from_address(@0xD3));
+
+    // payout のみ加算 → score = payout。A=100, B=50, C=200
+    arena::update_score(&mut arena, pa, 0, 100, 0);
+    arena::update_score(&mut arena, pb, 0, 50, 0);
+    arena::update_score(&mut arena, pc, 0, 200, 0);
+
+    assert!(arena::leaderboard_len(&arena) == 3);
+    let (e0, _m0, s0, _, _, _) = arena::leaderboard_entry_at(&arena, 0);
+    let (e1, _m1, s1, _, _, _) = arena::leaderboard_entry_at(&arena, 1);
+    let (e2, _m2, s2, _, _, _) = arena::leaderboard_entry_at(&arena, 2);
+    assert!(e0 == pc && s0 == 200);
+    assert!(e1 == pa && s1 == 100);
+    assert!(e2 == pb && s2 == 50);
+
+    arena::destroy_arena_for_testing(arena);
+}
+
+#[test]
+fun test_leaderboard_updates_existing_entry_no_duplicate() {
+    let ctx = &mut sui::tx_context::dummy();
+    let mut arena = arena::create_arena_for_testing<DUSDC>(
+        object::id_from_address(@0xBB), 0, 100, 300, ctx,
+    );
+    let pa = @0xA1;
+    arena::insert_player_for_testing(&mut arena, pa, object::id_from_address(@0xD1));
+
+    arena::update_score(&mut arena, pa, 0, 50, 0);  // score 50
+    arena::update_score(&mut arena, pa, 0, 70, 0);  // 累計 payout 120 → score 120
+
+    // 重複せず 1 件、最新スコア
+    assert!(arena::leaderboard_len(&arena) == 1);
+    let (e0, _m0, s0, _, _, _) = arena::leaderboard_entry_at(&arena, 0);
+    assert!(e0 == pa && s0 == 120);
+
+    arena::destroy_arena_for_testing(arena);
+}
+
+#[test]
+fun test_leaderboard_tiebreak_by_bet_count_then_joined() {
+    let ctx = &mut sui::tx_context::dummy();
+    let mut arena = arena::create_arena_for_testing<DUSDC>(
+        object::id_from_address(@0xBB), 0, 100, 300, ctx,
+    );
+    let (pa, pb) = (@0xA1, @0xB2);
+    arena::insert_player_for_testing(&mut arena, pa, object::id_from_address(@0xD1));
+    arena::insert_player_for_testing(&mut arena, pb, object::id_from_address(@0xD2));
+
+    // 同 score(=100)。A は 2 アクション、B は 1 アクション → bet_count 多い A が上位。
+    arena::update_score(&mut arena, pa, 0, 100, 0);
+    arena::update_score(&mut arena, pa, 0, 0, 0); // payout変化なし→score維持、bet_count=2
+    arena::update_score(&mut arena, pb, 0, 100, 0); // bet_count=1
+
+    let (e0, _m0, s0, c0, _, _) = arena::leaderboard_entry_at(&arena, 0);
+    let (e1, _m1, s1, c1, _, _) = arena::leaderboard_entry_at(&arena, 1);
+    assert!(e0 == pa && s0 == 100 && c0 == 2);
+    assert!(e1 == pb && s1 == 100 && c1 == 1);
+
+    arena::destroy_arena_for_testing(arena);
+}
+
+#[test]
+fun test_admin_refresh_leaderboard_rebuilds() {
+    let ctx = &mut sui::tx_context::dummy();
+    let mut arena = arena::create_arena_for_testing<DUSDC>(
+        object::id_from_address(@0xBB), 0, 100, 300, ctx,
+    );
+    let admin = arena::new_admin_cap_for_testing(ctx);
+    let (pa, pb) = (@0xA1, @0xB2);
+    arena::insert_player_for_testing(&mut arena, pa, object::id_from_address(@0xD1));
+    arena::insert_player_for_testing(&mut arena, pb, object::id_from_address(@0xD2));
+
+    // スコアを設定（update_score 経由でキャッシュにも入る）。
+    arena::update_score(&mut arena, pa, 0, 30, 0);
+    arena::update_score(&mut arena, pb, 0, 90, 0);
+
+    // バックフィルで再構築しても順位は score 降順（B が上位）。
+    arena::admin_refresh_leaderboard(&admin, &mut arena, vector[pa, pb]);
+    assert!(arena::leaderboard_len(&arena) == 2);
+    let (e0, _m0, s0, _, _, _) = arena::leaderboard_entry_at(&arena, 0);
+    assert!(e0 == pb && s0 == 90);
+
+    std::unit_test::destroy(admin);
+    arena::destroy_arena_for_testing(arena);
+}

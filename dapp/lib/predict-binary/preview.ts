@@ -15,13 +15,17 @@ export interface NoMintableQuantityContext {
     attempts: number;
 }
 
+export type TradePreviewPredicate = (preview: TradeAmounts & { quantity: bigint }) => boolean;
+
 export async function findBudgetedTradePreview({
     budget,
     preview,
+    isCandidateMintable = () => true,
     createNoMintableQuantityError,
 }: {
     budget: bigint;
     preview: (quantity: bigint) => Promise<TradeAmounts>;
+    isCandidateMintable?: TradePreviewPredicate;
     createNoMintableQuantityError?: (context: NoMintableQuantityContext) => Error;
 }): Promise<BudgetedTradePreview> {
     const firstTriedQuantity = 1n;
@@ -38,7 +42,7 @@ export async function findBudgetedTradePreview({
         if (result.mintCost > budget) {
             break;
         }
-        if (result.mintCost > 0n) {
+        if (result.mintCost > 0n && isCandidateMintable({ quantity: probeQuantity, ...result })) {
             affordableQuantity = probeQuantity;
             affordablePreview = result;
         }
@@ -67,7 +71,11 @@ export async function findBudgetedTradePreview({
     while (low <= high) {
         const quantity = (low + high) / 2n;
         const result = await preview(quantity);
-        if (result.mintCost > 0n && result.mintCost <= budget) {
+        if (
+            result.mintCost > 0n &&
+            result.mintCost <= budget &&
+            isCandidateMintable({ quantity, ...result })
+        ) {
             best = { quantity, firstTriedQuantity, ...result };
             low = quantity + 1n;
         } else {

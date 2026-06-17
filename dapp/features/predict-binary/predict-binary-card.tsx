@@ -23,7 +23,17 @@ export function PredictBinaryCard({
         direction === "UP" ? binary.canBetUp : direction === "DOWN" ? binary.canBetDown : false;
     const isBettingOpen = roundMarket?.state === "BETTING_OPEN";
     const isRoundLocked = roundMarket?.state === "FINAL_LIVE";
-    const inputDisabled = binary.isBusy || !isBettingOpen;
+    const isRoundCalculating = roundMarket?.state === "LOCKING_ROUND";
+    const choiceDisabled = binary.isBusy || !isBettingOpen;
+    const actionLabel = isBettingOpen
+        ? direction
+            ? `Enter ${direction}`
+            : "Select Direction"
+        : isRoundCalculating
+          ? "Calculating..."
+          : isRoundLocked
+            ? "Round Locked"
+            : "Betting Closed";
 
     return (
         <div className="panel-view active trade-view" data-panel="binary">
@@ -40,7 +50,7 @@ export function PredictBinaryCard({
                 <button
                     className={`duel-choice choice-button up-choice${direction === "UP" ? " selected" : ""}`}
                     type="button"
-                    disabled={inputDisabled}
+                    disabled={choiceDisabled}
                     aria-pressed={direction === "UP"}
                     onClick={() => setDirection(direction === "UP" ? null : "UP")}
                 >
@@ -58,7 +68,7 @@ export function PredictBinaryCard({
                 <button
                     className={`duel-choice choice-button down-choice${direction === "DOWN" ? " selected" : ""}`}
                     type="button"
-                    disabled={inputDisabled}
+                    disabled={choiceDisabled}
                     aria-pressed={direction === "DOWN"}
                     onClick={() => setDirection(direction === "DOWN" ? null : "DOWN")}
                 >
@@ -82,7 +92,7 @@ export function PredictBinaryCard({
                         step="0.000001"
                         type="number"
                         value={binary.amount}
-                        disabled={inputDisabled}
+                        disabled={binary.isBusy}
                         onChange={(event) => binary.setAmount(event.target.value)}
                     />
                     <span>DUSDC</span>
@@ -94,13 +104,7 @@ export function PredictBinaryCard({
                     disabled={!canEnter}
                     onClick={() => direction && void binary.placeBet(direction)}
                 >
-                    {isBettingOpen
-                        ? direction
-                            ? `Enter ${direction}`
-                            : "Select Direction"
-                        : isRoundLocked
-                          ? "Round Locked"
-                          : "Betting Closed"}
+                    {actionLabel}
                 </button>
 
                 <p className="payout-line muted-line" aria-live="polite">

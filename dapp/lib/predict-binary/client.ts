@@ -23,8 +23,10 @@ import {
     createMintBinaryTransaction,
     createPreviewRangeTradeAmountsTransaction,
     createPreviewTradeAmountsTransaction,
+    createReadAskBoundsTransaction,
     createReadBinaryPositionTransaction,
     createReadManagerBalanceTransaction,
+    createReadRangePositionTransaction,
     type RangeKeyInput,
     target,
 } from "./transactions.ts";
@@ -82,6 +84,13 @@ export interface TradePreviewDebugDetails {
     decodedMintCost?: string | null;
     decodedRedeemPayout?: string | null;
 }
+
+interface AskBounds {
+    minAsk: bigint;
+    maxAsk: bigint;
+}
+
+const FLOAT_SCALING = 1_000_000_000n;
 
 export class TradePreviewError extends Error {
     readonly details: TradePreviewDebugDetails;
@@ -277,7 +286,16 @@ function parseU64Return(
     }
     const returns = result.commandResults
         .flatMap((command) => command.returnValues)
-        .map((value) => BigInt(bcs.U64.parse(value.bcs)));
+        .flatMap((value): bigint[] => {
+            if (!isRecord(value) || !(value.bcs instanceof Uint8Array)) {
+                return [];
+            }
+            if (value.bcs.length === 8) {
+                return [BigInt(bcs.U64.parse(value.bcs))];
+            }
+            const pair = decodeU64PairReturnValue(value);
+            return pair ? [...pair] : [];
+        });
     if (returns.length === 0) {
         throw new Error("Simulation returned no value");
     }
@@ -348,6 +366,20 @@ function decodeTradeAmountReturns(
         throw new Error("Trade preview returned no trade amount values");
     }
     return decoded;
+}
+
+function askBoundCost(bound: bigint, quantity: bigint): bigint {
+    return (bound * quantity) / FLOAT_SCALING;
+}
+
+function isPreviewWithinAskBounds(
+    preview: { quantity: bigint; mintCost: bigint },
+    bounds: AskBounds,
+): boolean {
+    return (
+        preview.mintCost >= askBoundCost(bounds.minAsk, preview.quantity) &&
+        preview.mintCost <= askBoundCost(bounds.maxAsk, preview.quantity)
+    );
 }
 
 function toJsonSafe(value: unknown): unknown {
@@ -693,11 +725,35 @@ export async function readManagerBalance(
     return values[0] ?? 0n;
 }
 
+export async function readAskBounds(
+    client: SimulateClient,
+    sender: string,
+    oracleId: string,
+): Promise<AskBounds> {
+    const values = await simulateU64Returns(
+        client,
+        createReadAskBoundsTransaction({ sender, oracleId }),
+    );
+    const [minAsk, maxAsk] = values;
+    if (minAsk === undefined || maxAsk === undefined) {
+        throw new Error("Ask bounds response is missing values");
+    }
+    return { minAsk, maxAsk };
+}
+
 export async function readBinaryPosition(
     client: SimulateClient,
     input: BinaryMarketKeyInput & { sender: string; managerId: string },
 ): Promise<bigint> {
     const values = await simulateU64Returns(client, createReadBinaryPositionTransaction(input));
+    return values[0] ?? 0n;
+}
+
+export async function readRangePosition(
+    client: SimulateClient,
+    input: RangeKeyInput & { sender: string; managerId: string },
+): Promise<bigint> {
+    const values = await simulateU64Returns(client, createReadRangePositionTransaction(input));
     return values[0] ?? 0n;
 }
 
@@ -983,8 +1039,10 @@ export async function previewTradeWithinBudgetServerOnly({
     let lastPreviewAmounts: TradeAmounts | null = null;
     const detailsByQuantity = new Map<string, TradePreviewDebugDetails>();
     let firstPreviewLogged = false;
+    const askBounds = await readAskBounds(client, sender, oracleId);
     const preview = await findBudgetedTradePreview({
         budget,
+        isCandidateMintable: (candidate) => isPreviewWithinAskBounds(candidate, askBounds),
         preview: async (quantity) => {
             lastQuantityCandidate = quantity;
             try {
@@ -1151,6 +1209,12 @@ async function previewBudgetedBinaryMarketsBatched({
             throw new Error("Amount must be greater than zero");
         }
     }
+    const askBoundsByOracle = new Map<string, AskBounds>();
+    await Promise.all(
+        [...new Set(markets.map((market) => market.oracleId))].map(async (oracleId) => {
+            askBoundsByOracle.set(oracleId, await readAskBounds(client, sender, oracleId));
+        }),
+    );
     const firstRequests = markets.flatMap((market, marketIndex) =>
         buildPreviewCandidateQuantities(market.budget).map((quantity) => ({
             marketIndex,
@@ -1200,7 +1264,13 @@ async function previewBudgetedBinaryMarketsBatched({
 
     return markets.map((market, marketIndex) => {
         const candidates = previewsByMarket.get(marketIndex) ?? [];
-        const best = selectBestBudgetedPreview(market.budget, candidates);
+        const askBounds = askBoundsByOracle.get(market.oracleId);
+        if (!askBounds) {
+            throw new Error("Ask bounds are missing");
+        }
+        const best = selectBestBudgetedPreview(market.budget, candidates, (candidate) =>
+            isPreviewWithinAskBounds(candidate, askBounds),
+        );
         if (!best) {
             const last = candidates.at(-1);
             const throwReason = "Amount is too small for a mintable quantity";
@@ -1435,6 +1505,7 @@ async function previewTradeWithinBudgetFastFallback({
     let lastMintCost: string | null = null;
     let lastRedeemPayout: string | null = null;
     let lastQuantity = 1n;
+    const askBounds = await readAskBounds(client, sender, oracleId);
 
     const previewQuantity = async (quantity: bigint): Promise<BudgetedTradePreview | null> => {
         const normalized = quantity > 0n ? quantity : 1n;
@@ -1452,7 +1523,14 @@ async function previewTradeWithinBudgetFastFallback({
         lastDetails = details;
         lastMintCost = amounts.mintCost.toString();
         lastRedeemPayout = amounts.redeemPayout.toString();
-        if (amounts.mintCost > 0n && amounts.mintCost <= budget) {
+        if (
+            amounts.mintCost > 0n &&
+            amounts.mintCost <= budget &&
+            isPreviewWithinAskBounds(
+                { quantity: normalized, mintCost: amounts.mintCost },
+                askBounds,
+            )
+        ) {
             const candidate = {
                 quantity: normalized,
                 firstTriedQuantity: budget,

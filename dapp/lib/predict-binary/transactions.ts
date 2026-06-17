@@ -82,6 +82,33 @@ export interface RedeemBinaryTransactionInput extends BinaryMarketKeyInput {
     quantity: bigint;
 }
 
+export interface RedeemRangeTransactionInput extends RangeKeyInput {
+    sender: string;
+    managerId: string;
+    quantity: bigint;
+}
+
+export interface RedeemBreakTransactionInput extends RangeKeyInput {
+    sender: string;
+    managerId: string;
+    quantity: bigint;
+}
+
+export type CollectClaimInput =
+    | ({ kind: "binary" } & RedeemBinaryTransactionInput)
+    | ({ kind: "range" } & RedeemRangeTransactionInput);
+
+export interface CollectManagerBalanceInput {
+    managerId: string;
+    amount: bigint;
+}
+
+export interface CollectPayoutsTransactionInput {
+    sender: string;
+    claims: CollectClaimInput[];
+    managerBalances: CollectManagerBalanceInput[];
+}
+
 export interface RangeKeyInput {
     oracleId: string;
     expiryMs: number;
@@ -254,6 +281,40 @@ export function createReadBinaryPositionTransaction({
     const key = addMarketKey(tx, market);
     tx.moveCall({
         target: target("predict_manager", "position"),
+        arguments: [tx.object(managerId), key],
+    });
+    return tx;
+}
+
+export function createReadAskBoundsTransaction({
+    sender,
+    oracleId,
+}: {
+    sender: string;
+    oracleId: string;
+}): Transaction {
+    const tx = new Transaction();
+    tx.setSender(sender);
+    tx.moveCall({
+        target: target("predict", "ask_bounds"),
+        arguments: [tx.object(PREDICT_BINARY_CONFIG.predictObjectId), tx.pure.id(oracleId)],
+    });
+    return tx;
+}
+
+export function createReadRangePositionTransaction({
+    sender,
+    managerId,
+    ...range
+}: RangeKeyInput & {
+    sender: string;
+    managerId: string;
+}): Transaction {
+    const tx = new Transaction();
+    tx.setSender(sender);
+    const key = addRangeKey(tx, range);
+    tx.moveCall({
+        target: target("predict_manager", "range_position"),
         arguments: [tx.object(managerId), key],
     });
     return tx;
@@ -503,17 +564,23 @@ export function describeMintBreakMoveCalls(input: MintBreakTransactionInput): Mo
 }
 
 export function createRedeemBinaryTransaction(input: RedeemBinaryTransactionInput): Transaction {
+    // DeepARENA の bet::claim_binary 経由で redeem する。
+    // これにより payout が PnL スコア（cumulative_payout）と Top キャッシュに反映される。
+    // claim_binary が内部で permissionless redeem を行い payout を manager 残高へ入れる。
     const tx = new Transaction();
     tx.setSender(input.sender);
-    const key = addMarketKey(tx, input);
     tx.moveCall({
-        target: target("predict", "redeem_permissionless"),
+        target: arenaTarget("bet", "claim_binary"),
         typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
         arguments: [
+            tx.object(PREDICT_BINARY_CONFIG.arenaObjectId),
             tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
             tx.object(input.managerId),
             tx.object(input.oracleId),
-            key,
+            tx.pure.id(input.oracleId),
+            tx.pure.u64(input.expiryMs),
+            tx.pure.u64(input.strike),
+            tx.pure.bool(input.isUp),
             tx.pure.u64(input.quantity),
             tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
         ],
@@ -524,17 +591,22 @@ export function createRedeemBinaryTransaction(input: RedeemBinaryTransactionInpu
 export function createClaimBinaryPayoutTransaction(
     input: RedeemBinaryTransactionInput,
 ): Transaction {
+    // Collect ボタン: DeepARENA bet::claim_binary で redeem（payout を PnL/Top キャッシュへ反映）
+    // → manager から payout 分を withdraw → wallet へ transfer。
     const tx = new Transaction();
     tx.setSender(input.sender);
-    const key = addMarketKey(tx, input);
     tx.moveCall({
-        target: target("predict", "redeem_permissionless"),
+        target: arenaTarget("bet", "claim_binary"),
         typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
         arguments: [
+            tx.object(PREDICT_BINARY_CONFIG.arenaObjectId),
             tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
             tx.object(input.managerId),
             tx.object(input.oracleId),
-            key,
+            tx.pure.id(input.oracleId),
+            tx.pure.u64(input.expiryMs),
+            tx.pure.u64(input.strike),
+            tx.pure.bool(input.isUp),
             tx.pure.u64(input.quantity),
             tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
         ],
@@ -548,17 +620,131 @@ export function createClaimBinaryPayoutTransaction(
     return tx;
 }
 
+export function createClaimRangePayoutTransaction(input: RedeemRangeTransactionInput): Transaction {
+    const tx = new Transaction();
+    tx.setSender(input.sender);
+    tx.moveCall({
+        target: arenaTarget("bet", "claim_range"),
+        typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+        arguments: [
+            tx.object(PREDICT_BINARY_CONFIG.arenaObjectId),
+            tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
+            tx.object(input.managerId),
+            tx.object(input.oracleId),
+            tx.pure.id(input.oracleId),
+            tx.pure.u64(input.expiryMs),
+            tx.pure.u64(input.lowerStrike),
+            tx.pure.u64(input.higherStrike),
+            tx.pure.u64(input.quantity),
+            tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
+        ],
+    });
+    const coin = tx.moveCall({
+        target: target("predict_manager", "withdraw"),
+        typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+        arguments: [tx.object(input.managerId), tx.pure.u64(input.quantity)],
+    });
+    tx.transferObjects([coin], input.sender);
+    return tx;
+}
+
+export function createClaimBreakPayoutTransaction(input: RedeemBreakTransactionInput): Transaction {
+    const tx = new Transaction();
+    tx.setSender(input.sender);
+    tx.moveCall({
+        target: arenaTarget("bet", "claim_break"),
+        typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+        arguments: [
+            tx.object(PREDICT_BINARY_CONFIG.arenaObjectId),
+            tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
+            tx.object(input.managerId),
+            tx.object(input.oracleId),
+            tx.pure.id(input.oracleId),
+            tx.pure.u64(input.expiryMs),
+            tx.pure.u64(input.lowerStrike),
+            tx.pure.u64(input.higherStrike),
+            tx.pure.u64(input.quantity),
+            tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
+        ],
+    });
+    const coin = tx.moveCall({
+        target: target("predict_manager", "withdraw"),
+        typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+        arguments: [tx.object(input.managerId), tx.pure.u64(input.quantity)],
+    });
+    tx.transferObjects([coin], input.sender);
+    return tx;
+}
+
+export function createCollectPayoutsTransaction(
+    input: CollectPayoutsTransactionInput,
+): Transaction {
+    const tx = new Transaction();
+    tx.setSender(input.sender);
+
+    for (const claim of input.claims) {
+        if (claim.kind === "binary") {
+            tx.moveCall({
+                target: arenaTarget("bet", "claim_binary"),
+                typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+                arguments: [
+                    tx.object(PREDICT_BINARY_CONFIG.arenaObjectId),
+                    tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
+                    tx.object(claim.managerId),
+                    tx.object(claim.oracleId),
+                    tx.pure.id(claim.oracleId),
+                    tx.pure.u64(claim.expiryMs),
+                    tx.pure.u64(claim.strike),
+                    tx.pure.bool(claim.isUp),
+                    tx.pure.u64(claim.quantity),
+                    tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
+                ],
+            });
+        } else {
+            tx.moveCall({
+                target: arenaTarget("bet", "claim_range"),
+                typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+                arguments: [
+                    tx.object(PREDICT_BINARY_CONFIG.arenaObjectId),
+                    tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
+                    tx.object(claim.managerId),
+                    tx.object(claim.oracleId),
+                    tx.pure.id(claim.oracleId),
+                    tx.pure.u64(claim.expiryMs),
+                    tx.pure.u64(claim.lowerStrike),
+                    tx.pure.u64(claim.higherStrike),
+                    tx.pure.u64(claim.quantity),
+                    tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
+                ],
+            });
+        }
+
+        const payoutCoin = tx.moveCall({
+            target: target("predict_manager", "withdraw"),
+            typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+            arguments: [tx.object(claim.managerId), tx.pure.u64(claim.quantity)],
+        });
+        tx.transferObjects([payoutCoin], input.sender);
+    }
+
+    for (const balance of input.managerBalances) {
+        const coin = tx.moveCall({
+            target: target("predict_manager", "withdraw"),
+            typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
+            arguments: [tx.object(balance.managerId), tx.pure.u64(balance.amount)],
+        });
+        tx.transferObjects([coin], input.sender);
+    }
+
+    return tx;
+}
+
 export function describeClaimBinaryPayoutMoveCalls(): MoveCallSummary[] {
     return [
         {
-            target: target("market_key", "new"),
-            typeArguments: [],
-            purpose: "build Binary MarketKey",
-        },
-        {
-            target: target("predict", "redeem_permissionless"),
+            target: arenaTarget("bet", "claim_binary"),
             typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
-            purpose: "redeem winning Binary position into PredictManager balance",
+            purpose: "claim winning Binary via DeepARENA (updates PnL) into PredictManager balance",
         },
         {
             target: target("predict_manager", "withdraw"),
