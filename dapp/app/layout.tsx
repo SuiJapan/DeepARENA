@@ -3,7 +3,7 @@ import { Providers } from "./providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
-    title: "Deep Arena Mock Console",
+    title: "DeepArena",
     description: "Mock dashboard and contract adapter boundary for Deep Arena",
 };
 

@@ -1094,35 +1094,37 @@ export function BinaryPortfolioSection({
     };
 
     return (
-        <section className="binary-portfolio">
-            <section className="surface binary-portfolio-panel">
-                <div className="section-title">
+        <section className="port-layout">
+            <section className="data-card">
+                <div className="data-head">
                     <div>
                         <span>BTC Binary</span>
                         <h2>Current Positions</h2>
                     </div>
                     <button
                         type="button"
-                        className="text-action"
+                        className="tiny-button"
                         onClick={() => void refresh(true)}
                     >
                         Refresh
                     </button>
                 </div>
                 {!address ? (
-                    <div className="empty-state">Connect wallet to load BTC Binary positions.</div>
+                    <div className="port-footnote">
+                        Connect wallet to load BTC Binary positions.
+                    </div>
                 ) : error && !state ? (
-                    <div className="empty-state">Binary history fetch failed: {error}</div>
+                    <div className="port-footnote">Binary history fetch failed: {error}</div>
                 ) : isLoading && !state ? (
-                    <div className="empty-state">Loading BTC Binary positions...</div>
+                    <div className="port-footnote">Loading BTC Binary positions...</div>
                 ) : currentDisplayPositions.length === 0 ? (
-                    <div className="empty-state">
+                    <div className="port-footnote">
                         No current BTC Binary positions found in fetched events.
                     </div>
                 ) : (
-                    <div className="binary-position-table">
+                    <div className="ranking-list">
                         {currentDisplayPositions.map((position) => (
-                            <article key={position.key}>
+                            <article className="ranking-row" key={position.key}>
                                 <div>
                                     <span>Market</span>
                                     <strong>BTC</strong>
@@ -1172,7 +1174,7 @@ export function BinaryPortfolioSection({
                         ))}
                     </div>
                 )}
-                <p className="binary-portfolio-note">
+                <p className="port-footnote">
                     Current Positions are restored from fetched PositionMinted events. Query cap:{" "}
                     {MINTED_EVENT_MAX_PAGES * EVENT_PAGE_SIZE} mint events
                     {state
@@ -1192,23 +1194,23 @@ export function BinaryPortfolioSection({
                         ? ` Last refresh failed (${error}); showing previously loaded data.`
                         : ""}
                 </p>
-                {message ? <p className="binary-portfolio-note">{message}</p> : null}
+                {message ? <p className="port-footnote">{message}</p> : null}
             </section>
 
-            <section className="surface binary-portfolio-panel">
-                <div className="section-title">
+            <section className="data-card">
+                <div className="data-head">
                     <div>
                         <span>BTC Binary</span>
                         <h2>Your history</h2>
                     </div>
-                    <div className="history-title-side">
+                    <div className="port-right">
                         <strong>
                             {history.length} records · Page {safeHistoryPage} / {historyPageCount}
                         </strong>
                         {totalManagerBalance > 0n ? (
                             <button
                                 type="button"
-                                className="text-action"
+                                className="tiny-button"
                                 disabled={isCollecting}
                                 title="Withdraw all DUSDC remaining in your PredictManager (slippage deposits and unclaimed payouts) to your wallet"
                                 onClick={() => void collectManagerBalances()}
@@ -1221,17 +1223,19 @@ export function BinaryPortfolioSection({
                     </div>
                 </div>
                 {history.length === 0 ? (
-                    <div className="empty-state">No PositionMinted history in fetched events.</div>
+                    <div className="port-footnote">
+                        No PositionMinted history in fetched events.
+                    </div>
                 ) : (
                     <>
-                        <div className="binary-history-list">
+                        <div className="ranking-list">
                             {pagedHistory.map((item) => {
                                 const position = item.binaryPosition;
                                 const isExpanded = expandedHistoryKeys.has(item.key);
                                 return (
                                     <article
                                         key={item.key}
-                                        className={position ? statusClass(position.status) : ""}
+                                        className={`ranking-row ${position ? statusClass(position.status) : ""}`}
                                     >
                                         <div>
                                             <span>Date</span>
@@ -1278,10 +1282,10 @@ export function BinaryPortfolioSection({
                                                 {displayStatus(item.status)}
                                             </strong>
                                         </div>
-                                        <div className="binary-history-action">
+                                        <div className="port-right">
                                             <button
                                                 type="button"
-                                                className="accordion-chevron"
+                                                className="tiny-button"
                                                 onClick={() => toggleHistoryExpand(item.key)}
                                             >
                                                 {isExpanded ? "▲" : "▼"}
@@ -1373,7 +1377,7 @@ export function BinaryPortfolioSection({
                                                     <div className="history-accordion-claim">
                                                         <button
                                                             type="button"
-                                                            className="text-action"
+                                                            className="tiny-button"
                                                             disabled={redeemingKey === position.key}
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
@@ -1393,10 +1397,10 @@ export function BinaryPortfolioSection({
                             })}
                         </div>
                         {historyPageCount > 1 ? (
-                            <div className="binary-history-pagination">
+                            <div className="binary-history-pagination footer-actions">
                                 <button
                                     type="button"
-                                    className="text-action"
+                                    className="tiny-button"
                                     disabled={safeHistoryPage <= 1}
                                     onClick={() =>
                                         setHistoryPage((current) => Math.max(1, current - 1))
@@ -1413,7 +1417,7 @@ export function BinaryPortfolioSection({
                                 </span>
                                 <button
                                     type="button"
-                                    className="text-action"
+                                    className="tiny-button"
                                     disabled={safeHistoryPage >= historyPageCount}
                                     onClick={() =>
                                         setHistoryPage((current) =>

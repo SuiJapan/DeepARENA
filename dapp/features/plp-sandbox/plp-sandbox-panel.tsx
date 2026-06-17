@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { plpSandboxSuiScanPlpUrl } from "@/lib/plp-sandbox/config";
 import { usePlpSandbox } from "./use-plp-sandbox";
 
 type PlpSandboxMode = "supply" | "withdraw";
@@ -20,116 +19,92 @@ export function PlpSandboxPanel() {
     const unit = isSupplyMode ? "DUSDC" : "PLP";
 
     const statusMessage = (() => {
-        if (!plp.address) {
-            return "Wallet not connected";
-        }
-        if (!plp.isTestnet) {
-            return "Please switch your wallet to Sui Testnet";
-        }
-        if (!plp.isConfigured) {
-            return "PLP sandbox package is not configured";
-        }
-        if (plp.isRefreshing) {
-            return "Refreshing balances...";
-        }
+        if (!plp.address) return "Wallet not connected";
+        if (!plp.isTestnet) return "Please switch your wallet to Sui Testnet";
+        if (!plp.isConfigured) return "PLP sandbox package is not configured";
+        if (plp.isRefreshing) return "Refreshing balances...";
         return "";
     })();
 
     return (
-        <section className="trade-card plp-sandbox-card">
-            <div className="card-title">
+        <div className="panel-view active trade-view" data-panel="plp">
+            <div className="mode-topper trade-topper">
                 <div>
-                    <span>Liquidity</span>
-                    <h2>Predict PLP</h2>
+                    <p className="mode-eyebrow">Active mode</p>
+                    <h2 className="mode-title">Predict PLP</h2>
+                    <p className="mode-copy">Supply your prediction. Earn from accuracy.</p>
                 </div>
             </div>
 
-            <dl className="plp-sandbox-facts">
-                <div>
-                    <dt>DUSDC balance</dt>
-                    <dd>{plp.dusdcBalanceLabel}</dd>
+            <div className="trade-metric-list plp-metrics">
+                <div className="info-row">
+                    <span>My DUSDC Balance</span>
+                    <strong>{plp.dusdcBalanceLabel}</strong>
                 </div>
-                <div>
-                    <dt>PLP balance</dt>
-                    <dd>{plp.plpBalanceLabel}</dd>
+                <div className="info-row">
+                    <span>My PLP Balance</span>
+                    <strong>{plp.plpBalanceLabel}</strong>
                 </div>
-            </dl>
+            </div>
 
-            <div className="plp-sandbox-actions">
-                <div className="plp-sandbox-tabs" role="tablist" aria-label="PLP action">
-                    <button
-                        type="button"
-                        role="tab"
-                        aria-selected={isSupplyMode}
-                        data-active={isSupplyMode}
-                        onClick={() => setMode("supply")}
-                    >
-                        supply
-                    </button>
-                    <button
-                        type="button"
-                        role="tab"
-                        aria-selected={!isSupplyMode}
-                        data-active={!isSupplyMode}
-                        onClick={() => setMode("withdraw")}
-                    >
-                        withdraw
-                    </button>
-                </div>
-
-                <label className="plp-amount-field">
-                    <span>Amount</span>
-                    <div>
-                        <input
-                            inputMode="decimal"
-                            placeholder="0.000000"
-                            value={amount}
-                            onChange={(event) => setAmount(event.target.value)}
-                        />
-                        <strong>{unit}</strong>
-                        <button
-                            type="button"
-                            className="amount-max-button"
-                            disabled={isBusy}
-                            onClick={() => setAmount(maxInput)}
-                        >
-                            MAX
-                        </button>
-                    </div>
-                </label>
+            <div className="plp-switch choice-grid" role="tablist" aria-label="PLP action">
                 <button
+                    className={`choice-button${isSupplyMode ? " selected" : ""}`}
                     type="button"
-                    className="binary-enter-button"
-                    disabled={isActionDisabled}
-                    onClick={() => void (isSupplyMode ? plp.supply(amount) : plp.withdraw(amount))}
+                    onClick={() => setMode("supply")}
                 >
-                    {isBusy ? "processing" : mode}
+                    <strong>Supply</strong>
+                </button>
+                <button
+                    className={`choice-button${!isSupplyMode ? " selected" : ""}`}
+                    type="button"
+                    onClick={() => setMode("withdraw")}
+                >
+                    <strong>Withdraw</strong>
                 </button>
             </div>
 
-            <div className="plp-sandbox-status" data-status={plp.status} aria-live="polite">
-                {plp.balanceError ? <p>{plp.balanceError}</p> : null}
-                {plp.result ? <p>{plp.result.message}</p> : null}
-                {plp.result?.digest ? (
-                    <p>
-                        Transaction digest: <code>{plp.result.digest}</code>
-                    </p>
-                ) : null}
-                {plp.result?.explorerUrl ? (
-                    <a href={plp.result.explorerUrl} target="_blank" rel="noreferrer">
-                        View in Sui Explorer
-                    </a>
-                ) : null}
-                {!plp.result && !plp.balanceError ? (
-                    statusMessage ? (
-                        <p>{statusMessage}</p>
-                    ) : (
-                        <a href={plpSandboxSuiScanPlpUrl()} target="_blank" rel="noreferrer">
-                            View PLP on SuiScan
-                        </a>
-                    )
-                ) : null}
+            <div className="stake-card">
+                <label htmlFor="plp-stake">Amount</label>
+                <div className="stake-input-row">
+                    <span>{unit}</span>
+                    <input
+                        id="plp-stake"
+                        className="amount-input stake-input"
+                        inputMode="decimal"
+                        placeholder="0.000000"
+                        value={amount}
+                        onChange={(event) => setAmount(event.target.value)}
+                    />
+                    <button
+                        className="tiny-button max-button"
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => setAmount(maxInput)}
+                    >
+                        Max
+                    </button>
+                </div>
+                <button
+                    className="primary-button cta-full arena-cta"
+                    type="button"
+                    disabled={isActionDisabled}
+                    onClick={() => void (isSupplyMode ? plp.supply(amount) : plp.withdraw(amount))}
+                >
+                    {isBusy ? "Processing" : mode}
+                </button>
+                <p className="payout-line muted-line" data-status={plp.status} aria-live="polite">
+                    {plp.balanceError ?? plp.result?.message ?? statusMessage}
+                    {plp.result?.explorerUrl ? (
+                        <>
+                            {" "}
+                            <a href={plp.result.explorerUrl} target="_blank" rel="noreferrer">
+                                View transaction
+                            </a>
+                        </>
+                    ) : null}
+                </p>
             </div>
-        </section>
+        </div>
     );
 }

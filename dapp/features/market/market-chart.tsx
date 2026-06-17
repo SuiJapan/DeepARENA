@@ -43,10 +43,18 @@ function calculateReferenceLineY(history: UseMarketStreamResult["history"], stri
 
 export function MarketChart({
     binaryStrikeRaw,
+    embedded = false,
     market,
+    priceLabel: embeddedPriceLabel = null,
+    rangeLabel = null,
+    strikeLabel = null,
 }: {
     binaryStrikeRaw: string | null;
+    embedded?: boolean;
     market: UseMarketStreamResult;
+    priceLabel?: string | null;
+    rangeLabel?: string | null;
+    strikeLabel?: string | null;
 }) {
     const { status, history, latestTick, message, oracleId } = market;
     const changePercent = calculateChangePercent(history);
@@ -70,7 +78,7 @@ export function MarketChart({
     const statusMessage = message ?? oracleId ?? marketConfig.sourceLabel;
 
     return (
-        <section className="surface market-chart">
+        <section className={`surface market-chart${embedded ? " market-chart-embed" : ""}`}>
             <div className="section-title">
                 <div>
                     <span>Market view</span>
@@ -105,7 +113,16 @@ export function MarketChart({
                 <span>{lastUpdatedLabel}</span>
                 <span>{statusMessage}</span>
             </div>
-            <div className="chart-area">
+            <div className={embedded ? "chart-stage chart-area" : "chart-area"}>
+                {embedded && rangeLabel ? (
+                    <span className="chart-label band">{rangeLabel}</span>
+                ) : null}
+                {embedded && strikeLabel ? (
+                    <span className="chart-label strike">{strikeLabel}</span>
+                ) : null}
+                {embedded && embeddedPriceLabel ? (
+                    <span className="chart-label price">{embeddedPriceLabel}</span>
+                ) : null}
                 {history.length === 0 ? (
                     <div className="chart-empty" aria-live="polite">
                         {status === "ERROR" ? statusMessage : "Collecting oracle ticks..."}

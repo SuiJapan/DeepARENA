@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { MarketChart } from "@/features/market/market-chart";
 import type { UseMarketStreamResult } from "@/features/market/use-market-stream";
 import { PlpSandboxPanel } from "@/features/plp-sandbox/plp-sandbox-panel";
@@ -10,356 +10,290 @@ import type {
     PredictRoundMarket,
     usePredictRound,
 } from "@/features/predict-round/use-predict-round";
-import type { DeepArenaSnapshot, PlayerSummary, TokenAmount } from "@/lib/deep-arena/types";
-import { formatMarketPrice, marketConfig } from "@/lib/market/config";
+import type { DeepArenaSnapshot } from "@/lib/deep-arena/types";
+import { calculateMarketRange, formatMarketPrice, marketConfig } from "@/lib/market/config";
 
 type PredictRoundState = ReturnType<typeof usePredictRound>;
-
-function formatAmount(amount: TokenAmount, maximumFractionDigits = 2): string {
-    const value = Number(amount.atomic) / 10 ** amount.decimals;
-    return `${new Intl.NumberFormat("en-US", { maximumFractionDigits }).format(value)} ${amount.symbol}`;
-}
-
-function shortId(value: string): string {
-    return value.length > 18 ? `${value.slice(0, 8)}...${value.slice(-6)}` : value;
-}
+type ArenaMode = "binary" | "range" | "plp";
 
 function formatRawPredictPrice(value: string | null): string {
-    if (value === null) {
-        return "--";
-    }
+    if (value === null) return "--";
     const raw = BigInt(value);
     const scale = 1_000_000_000n;
     const price = Number(raw / scale) + Number(raw % scale) / Number(scale);
     return formatMarketPrice(price);
 }
 
-function formatJstDateTime(ms: number | null): string {
-    if (ms === null) {
-        return "--";
-    }
-    return new Intl.DateTimeFormat("en-US", {
-        month: "short",
-        day: "numeric",
+function formatCloseLabel(ms: number | null): string {
+    if (ms === null) return "Close --";
+    return `Close ${new Intl.DateTimeFormat("en-US", {
         hour: "2-digit",
         minute: "2-digit",
-        timeZone: "Asia/Tokyo",
-        timeZoneName: "short",
-    })
-        .format(new Date(ms))
-        .toUpperCase();
+        timeZone: "UTC",
+        hour12: false,
+    }).format(new Date(ms))} UTC`;
 }
 
-function RoundProgressBar({ progressPercent }: { progressPercent: number }) {
-    return (
-        <div
-            className="round-progress"
-            role="progressbar"
-            aria-label="Live round progress"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={progressPercent}
-        >
-            <span style={{ width: `${progressPercent}%` }} />
-        </div>
-    );
-}
-
-function LiveRoundPanel({
-    roundMarket,
-    progressPercent,
-    currentPrice,
+function ModeCard({
+    active,
+    description,
+    mode,
+    number,
+    onSelect,
+    title,
 }: {
-    roundMarket: PredictRoundMarket | null;
-    progressPercent: number;
-    currentPrice: number | null;
+    active: boolean;
+    description: string;
+    mode: ArenaMode;
+    number: string;
+    onSelect: (mode: ArenaMode) => void;
+    title: string;
 }) {
-    const [displayMarket, setDisplayMarket] = useState<PredictRoundMarket | null>(roundMarket);
-    useEffect(() => {
-        if (!roundMarket) {
-            return;
-        }
-        if (roundMarket.round && roundMarket.currentOracle) {
-            setDisplayMarket(roundMarket);
-            return;
-        }
-        setDisplayMarket((current) => current ?? roundMarket);
-    }, [roundMarket]);
-
-    const round = displayMarket?.round ?? null;
-    const currentOracle = displayMarket?.currentOracle ?? null;
-    const stateLabel =
-        displayMarket?.state === "BETTING_OPEN"
-            ? "BETTING OPEN"
-            : displayMarket?.state === "FINAL_LIVE"
-              ? "FINAL LIVE"
-              : displayMarket?.state === "LOCKING_ROUND"
-                ? "LOCKING ROUND"
-                : displayMarket?.state === "ROUND_LOCK_ERROR"
-                  ? "ROUND UNAVAILABLE"
-                  : displayMarket?.state === "ROUND_DATA_ERROR"
-                    ? "ROUND DATA ERROR"
-                    : "NO ACTIVE ROUND";
-
     return (
-        <section className="arena-band live-round-panel">
-            <div className="live-round-main">
-                <div className="live-round-label">
-                    <span className="live-dot" />
-                    <strong>BTC</strong>
-                    <small>{stateLabel}</small>
-                    <small>
-                        {currentOracle ? shortId(currentOracle.oracleId) : "NO ACTIVE ROUND"}
-                    </small>
-                </div>
-                <div className="live-round-content">
-                    <div>
-                        <span>Market</span>
-                        <h1>BTC</h1>
-                    </div>
-                    <div className="strike-price">
-                        <span>CURRENT PRICE</span>
-                        <strong>
-                            {currentPrice !== null ? formatMarketPrice(currentPrice) : "--"}
-                        </strong>
-                    </div>
-                    <div className="strike-price">
-                        <span>REFERENCE STRIKE</span>
-                        <strong>{formatRawPredictPrice(round?.binaryStrikeRaw ?? null)}</strong>
-                    </div>
-                    <div className="strike-price">
-                        <span>SETTLES</span>
-                        <strong>{formatJstDateTime(currentOracle?.expiryMs ?? null)}</strong>
-                    </div>
-                </div>
-                <RoundProgressBar progressPercent={progressPercent} />
-            </div>
-        </section>
+        <button
+            className={`mode-card mode-${mode}${active ? " active" : ""}`}
+            data-mode={mode}
+            type="button"
+            onClick={() => onSelect(mode)}
+        >
+            <span className="mode-glyph" aria-hidden="true" />
+            <span className="mode-no">{number}</span>
+            <h3>{title}</h3>
+            <p>{description}</p>
+            <span className="badge mode-state">{active ? "Active" : "Inactive"}</span>
+        </button>
     );
 }
 
-function NextRangeRoundCard({ roundMarket }: { roundMarket: PredictRoundMarket | null }) {
+function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null }) {
     const range = usePredictRange(roundMarket);
-    const displayDebugKeyRef = useRef<string | null>(null);
-    useEffect(() => {
-        if (process.env.NODE_ENV === "production") {
-            return;
-        }
-        const debugKey = JSON.stringify(range.displayDebug);
-        if (displayDebugKeyRef.current === debugKey) {
-            return;
-        }
-        displayDebugKeyRef.current = debugKey;
-        console.info("Range card display state", range.displayDebug);
-    }, [range.displayDebug]);
-    const statusMessage =
-        range.txStatus === "FAILED" ||
-        range.txStatus === "SUBMITTING" ||
-        range.txStatus === "CONFIRM IN WALLET"
-            ? range.message
-            : range.direction === "BREAK"
-              ? (range.breakPayoutLabel ?? "BREAK is a two-leg position: lower DOWN and upper UP.")
-              : range.expectedPayout
-                ? `Max payout ${range.expectedPayout}`
-                : (range.unavailableReason ?? range.message);
+    const selected = range.direction ?? "RANGE";
 
     return (
-        <section className="trade-card range next-range-card">
-            <div className="card-title">
+        <div className="panel-view active trade-view" data-panel="range">
+            <div className="mode-topper trade-topper">
                 <div>
-                    <span>BTC Break / Range</span>
-                    <h2>
-                        {marketConfig.displaySymbol} {range.marketLabel}
-                    </h2>
+                    <p className="mode-eyebrow">Active mode</p>
+                    <h2 className="mode-title">Range Market</h2>
+                    <p className="mode-copy">Pick a range or break before the round closes.</p>
                 </div>
+                <span className="fee-pill">Fee 3%</span>
             </div>
-            <fieldset className="direction-picker range-picker">
-                <legend>Choose range outcome</legend>
+
+            <div className="range-band-card">
+                <span>Range</span>
+                <strong>{range.marketLabel}</strong>
+            </div>
+
+            <div className="duel-board range-board">
                 <button
+                    className={`duel-choice choice-button${selected === "RANGE" ? " selected" : ""}`}
                     type="button"
-                    className="range-choice range-choice-range"
-                    data-active={range.direction === "RANGE"}
-                    aria-pressed={range.direction === "RANGE"}
                     disabled={!range.isBettingOpen}
                     onClick={() => range.setDirection(range.direction === "RANGE" ? null : "RANGE")}
                 >
-                    <span>RANGE</span>
-                    <strong>{range.rangeOdds}</strong>
+                    <span className="duel-name">In Range</span>
+                    <span className="duel-odds">{range.rangeOdds}</span>
                 </button>
+                <div className="duel-vs" aria-hidden="true">
+                    VS
+                </div>
                 <button
+                    className={`duel-choice choice-button${selected === "BREAK" ? " selected" : ""}`}
                     type="button"
-                    className="range-choice range-choice-break"
-                    data-active={range.direction === "BREAK"}
-                    aria-pressed={range.direction === "BREAK"}
                     disabled={!range.isBettingOpen}
                     onClick={() => range.setDirection(range.direction === "BREAK" ? null : "BREAK")}
                 >
-                    <span>BREAK</span>
-                    <strong>{range.breakOdds}</strong>
+                    <span className="duel-name">Break</span>
+                    <span className="duel-odds">{range.breakOdds}</span>
                 </button>
-                {range.activePositionDirection ? (
-                    <>
-                        {range.activePositionDirection === "RANGE" ? (
-                            <div className="binary-position-chip position-range">
-                                <span>YOUR BET</span>
-                                <strong>{range.activePositionCostLabel}</strong>
-                                {range.activePositionEntryOdds ? (
-                                    <em>Entry {range.activePositionEntryOdds}</em>
-                                ) : null}
-                            </div>
-                        ) : (
-                            <div className="binary-position-chip position-empty" aria-hidden />
-                        )}
-                        {range.activePositionDirection === "BREAK" ? (
-                            <div className="binary-position-chip position-break">
-                                <span>YOUR BET</span>
-                                <strong>{range.activePositionCostLabel}</strong>
-                                {range.activePositionEntryOdds ? (
-                                    <em>Entry {range.activePositionEntryOdds}</em>
-                                ) : null}
-                            </div>
-                        ) : (
-                            <div className="binary-position-chip position-empty" aria-hidden />
-                        )}
-                    </>
-                ) : null}
-            </fieldset>
-            <label className="binary-amount">
-                <span>Amount</span>
-                <div>
+            </div>
+
+            <div className="stake-card">
+                <label htmlFor="range-stake">Your BET</label>
+                <div className="stake-input-row">
+                    <span>DUSDC</span>
                     <input
-                        type="number"
+                        id="range-stake"
+                        className="amount-input stake-input"
                         min="0"
                         step="1"
+                        type="number"
                         value={range.amount}
                         disabled={!range.isBettingOpen}
                         onChange={(event) => range.setAmount(event.target.value)}
                     />
-                    <strong>DUSDC</strong>
                 </div>
-            </label>
-            <button
-                type="button"
-                className="binary-enter-button"
-                disabled={!range.canEnter}
-                onClick={() => void range.placeRangeBet()}
-            >
-                {range.isBettingOpen
-                    ? range.direction
-                        ? `ENTER ${range.direction}`
-                        : "select"
-                    : "BETTING CLOSED"}
-            </button>
-            <div className="binary-entry-status" aria-live="polite">
-                {range.activePositionDirection && range.activePositionCostLabel ? (
-                    <>
-                        <span>YOUR PICK {range.activePositionDirection}</span>
-                        <span>BET {range.activePositionCostLabel}</span>
-                        {range.activePositionEntryOdds ? (
-                            <span>ENTRY ODDS {range.activePositionEntryOdds}</span>
-                        ) : null}
-                    </>
-                ) : range.txStatus === "FAILED" ? (
-                    <span>{range.message}</span>
-                ) : (
-                    statusMessage
-                )}
+                <button
+                    className="primary-button cta-full arena-cta"
+                    type="button"
+                    disabled={!range.canEnter}
+                    onClick={() => void range.placeRangeBet()}
+                >
+                    {range.isBettingOpen
+                        ? range.direction
+                            ? `Enter ${range.direction === "RANGE" ? "Range Market" : "Break"}`
+                            : "Select Range Side"
+                        : "Betting Closed"}
+                </button>
+                <p className="payout-line muted-line" aria-live="polite">
+                    {range.activePositionDirection && range.activePositionCostLabel
+                        ? `Your bet ${range.activePositionDirection} · ${range.activePositionCostLabel}`
+                        : range.txStatus === "FAILED"
+                          ? range.message
+                          : range.direction === "BREAK"
+                            ? (range.breakPayoutLabel ?? range.unavailableReason ?? "")
+                            : (range.expectedPayout ?? range.unavailableReason ?? "")}
+                </p>
             </div>
-        </section>
-    );
-}
-
-function LeaderboardSkeleton() {
-    return (
-        <section className="surface leaderboard">
-            <div className="section-title">
-                <div>
-                    <span>Live standings</span>
-                    <h2>Leaderboard</h2>
-                </div>
-            </div>
-            <div className="leader-list" aria-busy="true">
-                {[1, 2, 3].map((n) => (
-                    <div className="leader-row skeleton" key={n} />
-                ))}
-            </div>
-        </section>
-    );
-}
-
-function Leaderboard({
-    players,
-    currentScore,
-}: {
-    players: PlayerSummary[];
-    currentScore?: string;
-}) {
-    return (
-        <section className="surface leaderboard">
-            <div className="section-title">
-                <div>
-                    <span>Live standings</span>
-                    <h2>Leaderboard</h2>
-                </div>
-                {currentScore ? <strong>{currentScore}</strong> : null}
-            </div>
-            <div className="leader-list">
-                {players.map((player) => (
-                    <div
-                        className="leader-row"
-                        data-current={player.isCurrentPlayer}
-                        key={player.address}
-                    >
-                        <span className="leader-rank">{player.rank}</span>
-                        <span className="leader-name">
-                            <strong>{player.displayName}</strong>
-                            <small>{player.address}</small>
-                        </span>
-                        <strong>{formatAmount(player.score)}</strong>
-                    </div>
-                ))}
-            </div>
-        </section>
+        </div>
     );
 }
 
 export function ArenaView({
     market,
     predictRound,
-    snapshot,
 }: {
     market: UseMarketStreamResult;
     predictRound: PredictRoundState;
     snapshot: DeepArenaSnapshot | null;
 }) {
-    const players = snapshot?.players ?? null;
+    const [mode, setMode] = useState<ArenaMode>("binary");
+    const round = predictRound.market?.round ?? null;
+    const currentOracle = predictRound.market?.currentOracle ?? null;
+    const currentPrice = market.reference.currentPrice;
+    const strikeLabel = formatRawPredictPrice(round?.binaryStrikeRaw ?? null);
+    const strike = round?.binaryStrikeRaw
+        ? Number(BigInt(round.binaryStrikeRaw)) / 1_000_000_000
+        : null;
+    const range =
+        strike !== null
+            ? calculateMarketRange(strike)
+            : currentPrice !== null
+              ? calculateMarketRange(currentPrice)
+              : null;
 
     return (
-        <>
-            <LiveRoundPanel
-                roundMarket={predictRound.market}
-                progressPercent={predictRound.progressPercent}
-                currentPrice={market.reference.currentPrice}
-            />
+        <section id="arena" className="page active" aria-label="Arena page">
+            <section className="section-block" id="market">
+                <div className="container">
+                    <div className="live-round-bar">
+                        <div className="live-cell">
+                            <div className="cell-label">Market Pair</div>
+                            <div className="pair-title">{marketConfig.displaySymbol}</div>
+                            <div className="cell-foot">
+                                <span className="live-dot" />
+                            </div>
+                        </div>
+                        <div className="live-cell">
+                            <div className="cell-label">Settles In</div>
+                            <div className="timer-big">
+                                {predictRound.countdownLabel ?? "--:--"}
+                            </div>
+                            <div className="cell-foot">
+                                <span>{formatCloseLabel(currentOracle?.expiryMs ?? null)}</span>
+                                <span>{predictRound.market?.state ?? "LIVE"}</span>
+                            </div>
+                        </div>
+                        <div className="live-cell">
+                            <div className="cell-label">Current Price</div>
+                            <div className="price-big">
+                                {currentPrice !== null ? formatMarketPrice(currentPrice) : "--"}
+                            </div>
+                            <div className="cell-foot">
+                                <span>Oracle live</span>
+                            </div>
+                        </div>
+                        <div className="live-cell">
+                            <div className="cell-label">Reference Strike</div>
+                            <div className="price-big" style={{ fontWeight: 700 }}>
+                                {strikeLabel}
+                            </div>
+                            <div className="cell-foot">
+                                <span>Strike price</span>
+                            </div>
+                        </div>
+                    </div>
 
-            <section className="arena-content">
-                <div className="trade-card-row">
-                    <PredictBinaryCard
-                        countdownLabel={predictRound.countdownLabel}
-                        roundMarket={predictRound.market}
-                        spotTimestampMs={market.reference.updatedAtMs}
-                    />
-                    <NextRangeRoundCard roundMarket={predictRound.market} />
-                    <PlpSandboxPanel />
-                </div>
-                <div className="market-ranking-row">
-                    <MarketChart
-                        binaryStrikeRaw={predictRound.market?.round?.binaryStrikeRaw ?? null}
-                        market={market}
-                    />
-                    {players !== null ? <Leaderboard players={players} /> : <LeaderboardSkeleton />}
+                    <div className="mode-grid">
+                        <ModeCard
+                            active={mode === "binary"}
+                            mode="binary"
+                            number="( 01 )"
+                            title="Binary Duel"
+                            description="Choose whether the live price settles above or below the strike."
+                            onSelect={setMode}
+                        />
+                        <ModeCard
+                            active={mode === "range"}
+                            mode="range"
+                            number="( 02 )"
+                            title="Range Market"
+                            description="Predict whether price remains inside the active band or breaks out."
+                            onSelect={setMode}
+                        />
+                        <ModeCard
+                            active={mode === "plp"}
+                            mode="plp"
+                            number="( 03 )"
+                            title="Predict PLP"
+                            description="Manage prediction liquidity with a calmer account-oriented flow."
+                            onSelect={setMode}
+                        />
+                    </div>
+
+                    <div className="market-layout">
+                        <article className="editorial-panel chart-panel">
+                            <div className="panel-head">
+                                <div>
+                                    <h2 className="panel-title">Market view</h2>
+                                </div>
+                                <div className="badge-row">
+                                    <span className="badge active">
+                                        <span className="live-dot" />
+                                        Oracle Live
+                                    </span>
+                                </div>
+                            </div>
+                            <MarketChart
+                                binaryStrikeRaw={
+                                    predictRound.market?.round?.binaryStrikeRaw ?? null
+                                }
+                                market={market}
+                                embedded
+                                rangeLabel={
+                                    range
+                                        ? `Range band · ${formatMarketPrice(range.lower)} — ${formatMarketPrice(range.upper)}`
+                                        : null
+                                }
+                                strikeLabel={
+                                    strikeLabel !== "--" ? `Strike · ${strikeLabel}` : null
+                                }
+                                priceLabel={
+                                    currentPrice !== null ? formatMarketPrice(currentPrice) : null
+                                }
+                            />
+                        </article>
+
+                        <aside
+                            className="editorial-panel action-panel"
+                            aria-label="Active mode action panel"
+                        >
+                            {mode === "binary" ? (
+                                <PredictBinaryCard
+                                    countdownLabel={predictRound.countdownLabel}
+                                    roundMarket={predictRound.market}
+                                    spotTimestampMs={market.reference.updatedAtMs}
+                                />
+                            ) : null}
+                            {mode === "range" ? (
+                                <RangePanel roundMarket={predictRound.market} />
+                            ) : null}
+                            {mode === "plp" ? <PlpSandboxPanel /> : null}
+                        </aside>
+                    </div>
                 </div>
             </section>
-        </>
+        </section>
     );
 }

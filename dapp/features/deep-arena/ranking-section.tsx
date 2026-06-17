@@ -137,103 +137,107 @@ export function RankingSection() {
     );
 
     return (
-        <section className="surface ranking-board">
-            <div className="section-title">
-                <div>
-                    <span>Arena season standings</span>
-                    <h2>Leaderboard</h2>
-                </div>
-                <div className="ranking-title-side">
-                    <strong>
-                        {players.length} players · Page {safePage} / {pageCount}
-                    </strong>
-                    <button type="button" className="text-action" onClick={() => void refresh()}>
-                        Refresh
-                    </button>
-                </div>
-            </div>
-            {error ? (
-                <div className="empty-state">Leaderboard fetch failed: {error}</div>
-            ) : isLoading && !state ? (
-                <div className="empty-state">Loading leaderboard...</div>
-            ) : players.length === 0 ? (
-                <div className="empty-state">No players have joined the arena yet.</div>
-            ) : (
-                <>
-                    <div className="ranking-list">
-                        {pagedPlayers.map((player) => {
-                            const isCurrent =
-                                address !== null && player.address.toLowerCase() === address;
-                            return (
-                                <article key={player.address} data-current={isCurrent}>
-                                    <div>
-                                        <span>Rank</span>
-                                        <strong
-                                            className={`ranking-rank${player.rank <= 3 ? " is-top" : ""}`}
-                                        >
-                                            {player.rank}
-                                        </strong>
-                                    </div>
-                                    <div>
-                                        <span>Player</span>
-                                        <strong title={player.address}>
-                                            {shortId(player.address)}
-                                            {isCurrent ? (
-                                                <em className="ranking-you">YOU</em>
-                                            ) : null}
-                                        </strong>
-                                    </div>
-                                    <div>
-                                        <span>Score (PnL)</span>
-                                        <strong>{formatAmount(player.score)}</strong>
-                                    </div>
-                                    <div>
-                                        <span>Total Bet</span>
-                                        <strong>{formatAmount(player.deposited)}</strong>
-                                    </div>
-                                    <div>
-                                        <span>Predict Manager</span>
-                                        <small title={player.predictManagerId}>
-                                            {shortId(player.predictManagerId)}
-                                        </small>
-                                    </div>
-                                </article>
-                            );
-                        })}
+        <div className="leader-layout">
+            <section className="data-card ranking-board">
+                <div className="data-head">
+                    <div>
+                        <h2 className="mini-title">Current Standings</h2>
+                        <p className="mini-desc">
+                            {currentPlayer
+                                ? `Your Score: ${formatAmount(currentPlayer.score)}`
+                                : "Arena season standings"}
+                        </p>
                     </div>
-                    {pageCount > 1 ? (
-                        <div className="binary-history-pagination">
-                            <button
-                                type="button"
-                                className="text-action"
-                                disabled={safePage <= 1}
-                                onClick={() => setPage((current) => Math.max(1, current - 1))}
-                            >
-                                Previous
-                            </button>
-                            <span>
-                                {Math.min((safePage - 1) * RANKING_PAGE_SIZE + 1, players.length)}-
-                                {Math.min(safePage * RANKING_PAGE_SIZE, players.length)}
-                            </span>
-                            <button
-                                type="button"
-                                className="text-action"
-                                disabled={safePage >= pageCount}
-                                onClick={() =>
-                                    setPage((current) => Math.min(pageCount, current + 1))
-                                }
-                            >
-                                Next
-                            </button>
+                    <div className="ranking-title-side">
+                        <strong>
+                            {players.length} players · Page {safePage} / {pageCount}
+                        </strong>
+                        <button
+                            type="button"
+                            className="tiny-button"
+                            onClick={() => void refresh()}
+                        >
+                            Refresh
+                        </button>
+                    </div>
+                </div>
+                {error ? (
+                    <div className="port-footnote">Leaderboard fetch failed: {error}</div>
+                ) : isLoading && !state ? (
+                    <div className="port-footnote">Loading leaderboard...</div>
+                ) : players.length === 0 ? (
+                    <div className="port-footnote">No players have joined the arena yet.</div>
+                ) : (
+                    <>
+                        <div className="ranking-list">
+                            {pagedPlayers.map((player) => {
+                                const isCurrent =
+                                    address !== null && player.address.toLowerCase() === address;
+                                return (
+                                    <article
+                                        className="ranking-row"
+                                        key={player.address}
+                                        data-current={isCurrent}
+                                    >
+                                        <span className="rank-num">
+                                            {String(player.rank).padStart(2, "0")}
+                                        </span>
+                                        <div>
+                                            <div className="player-name" title={player.address}>
+                                                {shortId(player.address)}
+                                                {isCurrent ? (
+                                                    <em className="ranking-you">YOU</em>
+                                                ) : null}
+                                            </div>
+                                            <span className="wallet">
+                                                Total Bet {formatAmount(player.deposited)} · Manager{" "}
+                                                {shortId(player.predictManagerId)}
+                                            </span>
+                                        </div>
+                                        <div className="score-value">
+                                            {formatAmount(player.score)}
+                                        </div>
+                                    </article>
+                                );
+                            })}
                         </div>
-                    ) : null}
-                </>
-            )}
-            <p className="binary-portfolio-note">
-                Score is net PnL recorded onchain for Deep Arena bets.
-                {state ? ` Updated ${formatUpdatedAt(state.fetchedAtMs)} JST.` : ""}
-                {currentPlayer ? ` Your rank: ${currentPlayer.rank}.` : ""}
-            </p>
-        </section>
+                        {pageCount > 1 ? (
+                            <div className="binary-history-pagination">
+                                <button
+                                    type="button"
+                                    className="tiny-button"
+                                    disabled={safePage <= 1}
+                                    onClick={() => setPage((current) => Math.max(1, current - 1))}
+                                >
+                                    Previous
+                                </button>
+                                <span>
+                                    {Math.min(
+                                        (safePage - 1) * RANKING_PAGE_SIZE + 1,
+                                        players.length,
+                                    )}
+                                    -{Math.min(safePage * RANKING_PAGE_SIZE, players.length)}
+                                </span>
+                                <button
+                                    type="button"
+                                    className="tiny-button"
+                                    disabled={safePage >= pageCount}
+                                    onClick={() =>
+                                        setPage((current) => Math.min(pageCount, current + 1))
+                                    }
+                                >
+                                    Next
+                                </button>
+                            </div>
+                        ) : null}
+                    </>
+                )}
+                <p className="port-footnote">
+                    Score is net PnL recorded onchain for Deep Arena bets.
+                    {state ? ` Updated ${formatUpdatedAt(state.fetchedAtMs)} JST.` : ""}
+                    {currentPlayer ? ` Your rank: ${currentPlayer.rank}.` : ""}
+                </p>
+            </section>
+        </div>
     );
 }
