@@ -1444,6 +1444,9 @@ export function usePredictBinary(
     return useMemo(() => {
         const canTradeBase =
             Boolean(address) && isTestnet && isBettingOpen && Boolean(market) && !isBusy;
+        const oddsClosedLabel = roundMarket?.state === "FINAL_LIVE" ? "Round Locked" : null;
+        const oddsCalculatingLabel =
+            roundMarket?.state === "LOCKING_ROUND" ? "Calculating..." : null;
         let currentBetPreviewKey: string | null = null;
         let hasPositiveAmount = false;
         try {
@@ -1471,6 +1474,24 @@ export function usePredictBinary(
             state: downPreview,
             expectedPreviewKey: currentBetPreviewKey,
         });
+        const formatSideOdds = (state: SidePreviewState): string => {
+            if (state.preview) {
+                return formatBinaryOddsFromQuantity(state.preview.quantity, state.preview.mintCost);
+            }
+            if (oddsClosedLabel) {
+                return oddsClosedLabel;
+            }
+            if (oddsCalculatingLabel) {
+                return oddsCalculatingLabel;
+            }
+            if (state.status === "PREVIEWING") {
+                return "Calculating...";
+            }
+            if (state.status === "ERROR") {
+                return "Odds unavailable";
+            }
+            return "--";
+        };
         return {
             amount,
             setAmount,
@@ -1489,26 +1510,8 @@ export function usePredictBinary(
             lastRedeem,
             lastEntryOdds,
             previewStatus,
-            upOdds: upPreview.preview
-                ? formatBinaryOddsFromQuantity(
-                      upPreview.preview.quantity,
-                      upPreview.preview.mintCost,
-                  )
-                : upPreview.status === "PREVIEWING"
-                  ? "Calculating..."
-                  : upPreview.status === "ERROR"
-                    ? "Odds unavailable"
-                    : "--",
-            downOdds: downPreview.preview
-                ? formatBinaryOddsFromQuantity(
-                      downPreview.preview.quantity,
-                      downPreview.preview.mintCost,
-                  )
-                : downPreview.status === "PREVIEWING"
-                  ? "Calculating..."
-                  : downPreview.status === "ERROR"
-                    ? "Odds unavailable"
-                    : "--",
+            upOdds: formatSideOdds(upPreview),
+            downOdds: formatSideOdds(downPreview),
             costLabel: lastMint
                 ? `${formatTokenAmount(lastMint.cost, PREDICT_BINARY_CONFIG.quoteDecimals)} DUSDC`
                 : null,
@@ -1565,6 +1568,7 @@ export function usePredictBinary(
         placeBet,
         position,
         previewStatus,
+        roundMarket?.state,
         sidePositions,
         txStatus,
         upPreview,

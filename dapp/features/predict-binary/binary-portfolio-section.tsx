@@ -15,7 +15,7 @@ import { PREDICT_BINARY_CONFIG, predictBinaryExplorerUrl } from "@/lib/predict-b
 import { formatBinaryOddsFromQuantity } from "@/lib/predict-binary/odds";
 import {
     createClaimBinaryPayoutTransaction,
-    createWithdrawManagerQuoteTransaction,
+    createCollectPayoutsTransaction,
     describeClaimBinaryPayoutMoveCalls,
 } from "@/lib/predict-binary/transactions";
 import {
@@ -63,6 +63,8 @@ interface BinaryPortfolioState {
     claimedKeys: string[];
     oracleSettlements: Record<string, OracleSettlementState>;
     managerBalances: Record<string, bigint>;
+    positionBalances: Record<string, bigint>;
+    rangePositionBalances: Record<string, bigint>;
     mintedPagesRead: number;
     rangePagesRead: number;
     redeemedPagesRead: number;
@@ -105,6 +107,28 @@ interface DisplayHistoryItem {
     settlementPriceLabel: string | null;
 }
 
+type CollectClaim =
+    | {
+          kind: "binary";
+          key: string;
+          managerId: string;
+          oracleId: string;
+          expiryMs: number;
+          strike: bigint;
+          isUp: boolean;
+          quantity: bigint;
+      }
+    | {
+          kind: "range";
+          key: string;
+          managerId: string;
+          oracleId: string;
+          expiryMs: number;
+          lowerStrike: bigint;
+          higherStrike: bigint;
+          quantity: bigint;
+      };
+
 const HISTORY_PAGE_SIZE = 50;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -125,6 +149,22 @@ function positionKey({
     return [oracleId, expiryMs.toString(), strike.toString(), isUp ? "UP" : "DOWN"].join(":");
 }
 
+function managerPositionKey({
+    managerId,
+    oracleId,
+    expiryMs,
+    strike,
+    isUp,
+}: {
+    managerId: string;
+    oracleId: string;
+    expiryMs: number;
+    strike: bigint;
+    isUp: boolean;
+}): string {
+    return [managerId, positionKey({ oracleId, expiryMs, strike, isUp })].join(":");
+}
+
 function rangePositionKey(event: RangeMintEvent): string {
     return [
         "RANGE",
@@ -133,6 +173,41 @@ function rangePositionKey(event: RangeMintEvent): string {
         event.lowerStrike.toString(),
         event.higherStrike.toString(),
     ].join(":");
+}
+
+function managerRangePositionKey({
+    managerId,
+    oracleId,
+    expiryMs,
+    lowerStrike,
+    higherStrike,
+}: {
+    managerId: string;
+    oracleId: string;
+    expiryMs: number;
+    lowerStrike: bigint;
+    higherStrike: bigint;
+}): string {
+    return [
+        managerId,
+        eventlessRangePositionKey({ oracleId, expiryMs, lowerStrike, higherStrike }),
+    ].join(":");
+}
+
+function eventlessRangePositionKey({
+    oracleId,
+    expiryMs,
+    lowerStrike,
+    higherStrike,
+}: {
+    oracleId: string;
+    expiryMs: number;
+    lowerStrike: bigint;
+    higherStrike: bigint;
+}): string {
+    return [oracleId, expiryMs.toString(), lowerStrike.toString(), higherStrike.toString()].join(
+        ":",
+    );
 }
 
 function eventKey(event: MintedPositionEvent): string {
@@ -247,6 +322,7 @@ function buildPositions({
     claimedKeys,
     oracleSettlements,
     managerBalances,
+    positionBalances,
     roundMarket,
 }: {
     minted: MintedPositionEvent[];
@@ -254,6 +330,7 @@ function buildPositions({
     claimedKeys: string[];
     oracleSettlements: Record<string, OracleSettlementState>;
     managerBalances: Record<string, bigint>;
+    positionBalances: Record<string, bigint>;
     roundMarket: PredictRoundMarket | null;
 }): PortfolioPosition[] {
     const grouped = new Map<string, PortfolioPosition>();
@@ -310,6 +387,23 @@ function buildPositions({
                 : 0n;
         position.redeemManagerId =
             position.managerIds.length === 1 ? (position.managerIds[0] ?? null) : null;
+        if (position.redeemManagerId) {
+            const onchainPosition =
+                positionBalances[
+                    managerPositionKey({
+                        managerId: position.redeemManagerId,
+                        oracleId: position.oracleId,
+                        expiryMs: position.expiryMs,
+                        strike: position.strike,
+                        isUp: position.isUp,
+                    })
+                ];
+            if (onchainPosition === undefined) {
+                position.redeemQuantity = 0n;
+            } else if (position.redeemQuantity > onchainPosition) {
+                position.redeemQuantity = onchainPosition;
+            }
+        }
 
         // CLAIMED は「wallet が実際に DUSDC を受領した TX が確認できた」場合のみ。
         // 自動 redeem（payout は manager に入るだけ）は CLAIMED にしない。
@@ -506,6 +600,55 @@ function rangeStatus(
     return won ? "Win" : "Lose";
 }
 
+function rangeCollectClaims({
+    rangeMinted,
+    oracleSettlements,
+    rangePositionBalances,
+}: {
+    rangeMinted: RangeMintEvent[];
+    oracleSettlements: Record<string, OracleSettlementState>;
+    rangePositionBalances: Record<string, bigint>;
+}): CollectClaim[] {
+    const grouped = new Map<
+        string,
+        {
+            managerId: string;
+            oracleId: string;
+            expiryMs: number;
+            lowerStrike: bigint;
+            higherStrike: bigint;
+            quantity: bigint;
+        }
+    >();
+    for (const event of rangeMinted) {
+        if (rangeStatus(event, oracleSettlements) !== "Win") {
+            continue;
+        }
+        const key = managerRangePositionKey(event);
+        const current = grouped.get(key);
+        if (!current) {
+            grouped.set(key, {
+                managerId: event.managerId,
+                oracleId: event.oracleId,
+                expiryMs: event.expiryMs,
+                lowerStrike: event.lowerStrike,
+                higherStrike: event.higherStrike,
+                quantity: event.quantity,
+            });
+        } else {
+            current.quantity += event.quantity;
+        }
+    }
+    return [...grouped.entries()].flatMap(([key, claim]) => {
+        const onchainQuantity = rangePositionBalances[key] ?? 0n;
+        const quantity = claim.quantity < onchainQuantity ? claim.quantity : onchainQuantity;
+        if (quantity <= 0n) {
+            return [];
+        }
+        return [{ kind: "range", key, ...claim, quantity }];
+    });
+}
+
 function breakStatus({
     group,
     oracleSettlements,
@@ -624,6 +767,8 @@ interface PortfolioApiResponse {
     redeemed: SerializedRedeemedPositionEvent[];
     claimedKeys: string[];
     managerBalances: Record<string, string>;
+    positionBalances: Record<string, string>;
+    rangePositionBalances: Record<string, string>;
     pagesInfo: {
         mintedPagesRead: number;
         mintedReachedLimit: boolean;
@@ -747,7 +892,7 @@ export function BinaryPortfolioSection({
     }, []);
 
     const refresh = useCallback(
-        async (forceFresh = false) => {
+        async (forceFresh = true) => {
             if (!address) {
                 setState(null);
                 setError(null);
@@ -786,6 +931,15 @@ export function BinaryPortfolioSection({
                 const managerBalances: Record<string, bigint> = Object.fromEntries(
                     Object.entries(data.managerBalances).map(([k, v]) => [k, BigInt(v)]),
                 );
+                const positionBalances: Record<string, bigint> = Object.fromEntries(
+                    Object.entries(data.positionBalances ?? {}).map(([k, v]) => [k, BigInt(v)]),
+                );
+                const rangePositionBalances: Record<string, bigint> = Object.fromEntries(
+                    Object.entries(data.rangePositionBalances ?? {}).map(([k, v]) => [
+                        k,
+                        BigInt(v),
+                    ]),
+                );
 
                 setState({
                     minted: mintedEvents,
@@ -794,6 +948,8 @@ export function BinaryPortfolioSection({
                     claimedKeys: data.claimedKeys,
                     oracleSettlements,
                     managerBalances,
+                    positionBalances,
+                    rangePositionBalances,
                     mintedPagesRead: data.pagesInfo.mintedPagesRead,
                     rangePagesRead: data.pagesInfo.rangePagesRead,
                     redeemedPagesRead: data.pagesInfo.redeemedPagesRead,
@@ -823,6 +979,7 @@ export function BinaryPortfolioSection({
                 claimedKeys: state?.claimedKeys ?? [],
                 oracleSettlements: state?.oracleSettlements ?? {},
                 managerBalances: state?.managerBalances ?? {},
+                positionBalances: state?.positionBalances ?? {},
                 roundMarket,
             }),
         [roundMarket, state],
@@ -1004,37 +1161,108 @@ export function BinaryPortfolioSection({
         const balances = state?.managerBalances ?? {};
         return Object.values(balances).reduce((total, balance) => total + balance, 0n);
     }, [state]);
+    const collectClaims = useMemo<CollectClaim[]>(() => {
+        const binaryClaims: CollectClaim[] = positions.flatMap((position) => {
+            if (!position.canRedeem || !position.redeemManagerId || position.redeemQuantity <= 0n) {
+                return [];
+            }
+            return [
+                {
+                    kind: "binary",
+                    key: position.key,
+                    managerId: position.redeemManagerId,
+                    oracleId: position.oracleId,
+                    expiryMs: position.expiryMs,
+                    strike: position.strike,
+                    isUp: position.isUp,
+                    quantity: position.redeemQuantity,
+                },
+            ];
+        });
+        const rangeClaims = rangeCollectClaims({
+            rangeMinted: state?.rangeMinted ?? [],
+            oracleSettlements: state?.oracleSettlements ?? {},
+            rangePositionBalances: state?.rangePositionBalances ?? {},
+        });
+        return [...binaryClaims, ...rangeClaims];
+    }, [positions, state]);
+    const totalClaimablePayout = useMemo(
+        () => collectClaims.reduce((total, claim) => total + claim.quantity, 0n),
+        [collectClaims],
+    );
+    const totalCollectableAmount = totalManagerBalance + totalClaimablePayout;
 
-    // 全 manager の残高をまとめて wallet へ引き出す（manager ごとに 1 TX）
+    // Collect は未 redeem の勝ち分を DeepARENA 経由で PnL 反映してから、残高を wallet へ引き出す。
     const collectManagerBalances = async () => {
         if (!address || !state) {
-            return;
-        }
-        const entries = Object.entries(state.managerBalances).filter(([, balance]) => balance > 0n);
-        if (entries.length === 0) {
             return;
         }
         setIsCollecting(true);
         setMessage("Confirm in wallet");
         try {
-            let collected = 0n;
-            for (const [managerId, balance] of entries) {
-                const tx = createWithdrawManagerQuoteTransaction({
-                    sender: address,
-                    managerId,
-                    amount: balance,
-                });
-                console.info("Binary portfolio Collect transaction", {
-                    managerId,
-                    amount: balance.toString(),
-                });
-                const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
-                const digest = readDigest(result);
-                await client.core.waitForTransaction({ digest, timeout: 60_000 });
-                collected += balance;
+            const entries = Object.entries(state.managerBalances).filter(
+                ([, balance]) => balance > 0n,
+            );
+            if (entries.length === 0 && collectClaims.length === 0) {
+                setMessage("No claimable payout or DUSDC remains in your PredictManager");
+                return;
             }
-            setMessage(`Collected ${formatDUSDC(collected)} to wallet`);
-            await refresh();
+            const claimed = collectClaims.reduce((total, claim) => total + claim.quantity, 0n);
+            const collected = entries.reduce((total, [, balance]) => total + balance, 0n);
+            const tx = createCollectPayoutsTransaction({
+                sender: address,
+                claims: collectClaims.map((claim) =>
+                    claim.kind === "binary"
+                        ? {
+                              kind: "binary",
+                              sender: address,
+                              managerId: claim.managerId,
+                              oracleId: claim.oracleId,
+                              expiryMs: claim.expiryMs,
+                              strike: claim.strike,
+                              isUp: claim.isUp,
+                              quantity: claim.quantity,
+                          }
+                        : {
+                              kind: "range",
+                              sender: address,
+                              managerId: claim.managerId,
+                              oracleId: claim.oracleId,
+                              expiryMs: claim.expiryMs,
+                              lowerStrike: claim.lowerStrike,
+                              higherStrike: claim.higherStrike,
+                              quantity: claim.quantity,
+                          },
+                ),
+                managerBalances: entries.map(([managerId, amount]) => ({ managerId, amount })),
+            });
+            console.info("Binary portfolio Collect batch transaction", {
+                claims: collectClaims.map((claim) => ({
+                    kind: claim.kind,
+                    key: claim.key,
+                    managerId: claim.managerId,
+                    oracleId: claim.oracleId,
+                    expiryMs: claim.expiryMs,
+                    quantity: claim.quantity.toString(),
+                })),
+                managerBalances: entries.map(([managerId, amount]) => ({
+                    managerId,
+                    amount: amount.toString(),
+                })),
+            });
+            const result = await dAppKit.signAndExecuteTransaction({ transaction: tx });
+            const digest = readDigest(result);
+            await client.core.waitForTransaction({ digest, timeout: 60_000 });
+            if (claimed > 0n && collected > 0n) {
+                setMessage(
+                    `Claimed ${formatDUSDC(claimed)} via DeepARENA and collected ${formatDUSDC(collected)}`,
+                );
+            } else if (claimed > 0n) {
+                setMessage(`Claimed ${formatDUSDC(claimed)} via DeepARENA`);
+            } else {
+                setMessage(`Collected ${formatDUSDC(collected)} to wallet`);
+            }
+            await refresh(true);
         } catch (caught) {
             if (isWalletUserRejection(caught)) {
                 setMessage("Transaction cancelled");
@@ -1088,7 +1316,7 @@ export function BinaryPortfolioSection({
                     ? `Claimed ${formatDUSDC(claimedPayout)}`
                     : "Redeemed to manager. Withdraw DUSDC may be needed.",
             );
-            await refresh();
+            await refresh(true);
         } catch (caught) {
             if (isWalletUserRejection(caught)) {
                 console.info(
@@ -1193,19 +1421,17 @@ export function BinaryPortfolioSection({
                         </p>
                     </div>
                     <div className="port-right">
-                        {totalManagerBalance > 0n ? (
-                            <button
-                                type="button"
-                                className="tiny-button collect-button"
-                                disabled={isCollecting}
-                                title="Withdraw all DUSDC remaining in your PredictManager (slippage deposits and unclaimed payouts) to your wallet"
-                                onClick={() => void collectManagerBalances()}
-                            >
-                                {isCollecting
-                                    ? "Collecting..."
-                                    : `Collect ${formatDUSDC(totalManagerBalance)}`}
-                            </button>
-                        ) : null}
+                        <button
+                            type="button"
+                            className="tiny-button collect-button"
+                            disabled={isCollecting || totalCollectableAmount <= 0n}
+                            title="Claim redeemable payouts through DeepARENA, then withdraw DUSDC currently remaining in your PredictManager"
+                            onClick={() => void collectManagerBalances()}
+                        >
+                            {isCollecting
+                                ? "Collecting..."
+                                : `Collect ${formatDUSDC(totalCollectableAmount)}`}
+                        </button>
                     </div>
                 </div>
                 {history.length === 0 ? (

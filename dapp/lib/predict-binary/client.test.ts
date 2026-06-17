@@ -61,6 +61,17 @@ test("raises quantity when tiny candidates have zero mint cost", async () => {
     assert.equal(result.mintCost, 10n);
 });
 
+test("budgeted preview skips affordable candidates rejected by mintability predicate", async () => {
+    const result = await findBudgetedTradePreview({
+        budget: 10n,
+        preview: async (quantity) => ({ mintCost: quantity, redeemPayout: quantity }),
+        isCandidateMintable: (preview) => preview.quantity < 8n,
+    });
+
+    assert.equal(result.quantity, 7n);
+    assert.equal(result.mintCost, 7n);
+});
+
 test("builds preview attempts before reporting no mintable quantity", async () => {
     const tried: bigint[] = [];
     await assert.rejects(

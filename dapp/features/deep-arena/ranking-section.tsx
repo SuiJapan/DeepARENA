@@ -57,7 +57,7 @@ function readPlayerSummary(value: unknown): PlayerSummary | null {
     };
 }
 
-function formatAmount(amount: TokenAmount, maximumFractionDigits = 6): string {
+function formatAmount(amount: TokenAmount, maximumFractionDigits = 2): string {
     const value = Number(amount.atomic) / 10 ** amount.decimals;
     return `${new Intl.NumberFormat("en-US", { maximumFractionDigits }).format(value)} ${amount.symbol}`;
 }
@@ -129,16 +129,16 @@ export function RankingSection() {
             <section className="data-card ranking-board">
                 <div className="data-head">
                     <div>
-                        <h2 className="mini-title">Current Standings</h2>
+                        <h2 className="mini-title">Top Earners</h2>
                         <p className="mini-desc">
                             {currentPlayer ? (
                                 <>
-                                    Your Score: {formatAmount(currentPlayer.score)}
+                                    Your Winnings: {formatAmount(currentPlayer.score)}
                                     <br />
                                     Your Rank: {currentPlayer.rank}
                                 </>
                             ) : (
-                                "Arena season standings"
+                                "Arena season winnings"
                             )}
                         </p>
                     </div>

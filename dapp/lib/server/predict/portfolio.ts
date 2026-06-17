@@ -7,10 +7,12 @@ import {
     RANGE_MINTED_EVENT_TYPE,
     type RangeMintEvent,
     type RedeemedPositionEvent,
+    readBinaryPosition,
     readManagerBalance,
     readPositionMintedEvent,
     readPositionRedeemedEvent,
     readRangeMintedEvent,
+    readRangePosition,
 } from "@/lib/predict-binary/client";
 import { PREDICT_BINARY_CONFIG } from "@/lib/predict-binary/config";
 import { mapWithConcurrency } from "@/lib/utils/concurrent";
@@ -122,6 +124,70 @@ function hasPositiveWalletDusdcBalanceChange(
     });
 }
 
+function positionKey({
+    oracleId,
+    expiryMs,
+    strike,
+    isUp,
+}: {
+    oracleId: string;
+    expiryMs: number;
+    strike: bigint;
+    isUp: boolean;
+}): string {
+    return [oracleId, expiryMs.toString(), strike.toString(), isUp ? "UP" : "DOWN"].join(":");
+}
+
+function managerPositionKey({
+    managerId,
+    oracleId,
+    expiryMs,
+    strike,
+    isUp,
+}: {
+    managerId: string;
+    oracleId: string;
+    expiryMs: number;
+    strike: bigint;
+    isUp: boolean;
+}): string {
+    return [managerId, positionKey({ oracleId, expiryMs, strike, isUp })].join(":");
+}
+
+function rangePositionKey({
+    oracleId,
+    expiryMs,
+    lowerStrike,
+    higherStrike,
+}: {
+    oracleId: string;
+    expiryMs: number;
+    lowerStrike: bigint;
+    higherStrike: bigint;
+}): string {
+    return [oracleId, expiryMs.toString(), lowerStrike.toString(), higherStrike.toString()].join(
+        ":",
+    );
+}
+
+function managerRangePositionKey({
+    managerId,
+    oracleId,
+    expiryMs,
+    lowerStrike,
+    higherStrike,
+}: {
+    managerId: string;
+    oracleId: string;
+    expiryMs: number;
+    lowerStrike: bigint;
+    higherStrike: bigint;
+}): string {
+    return [managerId, rangePositionKey({ oracleId, expiryMs, lowerStrike, higherStrike })].join(
+        ":",
+    );
+}
+
 function isTxSuccess(block: unknown): boolean {
     if (!isRecord(block)) return false;
     const effects = isRecord(block.effects) ? block.effects : null;
@@ -145,6 +211,8 @@ interface PortfolioData {
     redeemed: RedeemedPositionEvent[];
     claimedKeys: string[];
     managerBalances: Record<string, string>;
+    positionBalances: Record<string, string>;
+    rangePositionBalances: Record<string, string>;
     pagesInfo: {
         mintedPagesRead: number;
         mintedReachedLimit: boolean;
@@ -317,6 +385,70 @@ async function buildPortfolioData(walletAddress: string): Promise<PortfolioData>
     const managerBalances = Object.fromEntries(
         managerBalanceEntries.filter((e): e is [string, string] => e !== null),
     );
+    const uniquePositionInputs = [
+        ...new Map(
+            minted.map((event) => [
+                managerPositionKey(event),
+                {
+                    managerId: event.managerId,
+                    oracleId: event.oracleId,
+                    expiryMs: event.expiryMs,
+                    strike: event.strike,
+                    isUp: event.isUp,
+                },
+            ]),
+        ).values(),
+    ];
+    const positionBalanceEntries = await mapWithConcurrency(
+        uniquePositionInputs,
+        MANAGER_BALANCE_CONCURRENCY,
+        async (input) => {
+            try {
+                const balance = await readBinaryPosition(suiClient, {
+                    sender: walletAddress,
+                    ...input,
+                });
+                return [managerPositionKey(input), balance.toString()] as const;
+            } catch {
+                return null;
+            }
+        },
+    );
+    const positionBalances = Object.fromEntries(
+        positionBalanceEntries.filter((e): e is [string, string] => e !== null),
+    );
+    const uniqueRangePositionInputs = [
+        ...new Map(
+            rangeMinted.map((event) => [
+                managerRangePositionKey(event),
+                {
+                    managerId: event.managerId,
+                    oracleId: event.oracleId,
+                    expiryMs: event.expiryMs,
+                    lowerStrike: event.lowerStrike,
+                    higherStrike: event.higherStrike,
+                },
+            ]),
+        ).values(),
+    ];
+    const rangePositionBalanceEntries = await mapWithConcurrency(
+        uniqueRangePositionInputs,
+        MANAGER_BALANCE_CONCURRENCY,
+        async (input) => {
+            try {
+                const balance = await readRangePosition(suiClient, {
+                    sender: walletAddress,
+                    ...input,
+                });
+                return [managerRangePositionKey(input), balance.toString()] as const;
+            } catch {
+                return null;
+            }
+        },
+    );
+    const rangePositionBalances = Object.fromEntries(
+        rangePositionBalanceEntries.filter((e): e is [string, string] => e !== null),
+    );
 
     return {
         minted,
@@ -324,6 +456,8 @@ async function buildPortfolioData(walletAddress: string): Promise<PortfolioData>
         redeemed,
         claimedKeys,
         managerBalances,
+        positionBalances,
+        rangePositionBalances,
         pagesInfo: {
             mintedPagesRead: pagesRead,
             mintedReachedLimit: reachedLimit,

@@ -1031,6 +1031,8 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
 
     const isBusy = txStatus === "CONFIRM IN WALLET" || txStatus === "SUBMITTING";
     const isBettingOpen = roundMarket?.state === "BETTING_OPEN";
+    const roundLockedLabel = roundMarket?.state === "FINAL_LIVE" ? "Round Locked" : null;
+    const roundCalculatingLabel = roundMarket?.state === "LOCKING_ROUND" ? "Calculating..." : null;
 
     let budget: bigint | null = null;
     try {
@@ -1046,6 +1048,7 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
             budget = maxStake;
         }
     }
+    const unavailableOddsLabel = roundLockedLabel ?? roundCalculatingLabel ?? "Unavailable";
     const displayPreviewKey =
         address && baseMarket && rangeMarkets.length > 0 && budget !== null && budget > 0n
             ? buildCandidateSetPreviewKey({
@@ -1735,6 +1738,7 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
         setAmount,
         txStatus,
         message,
+        isBusy,
         isBettingOpen,
         canEnter,
         marketLabel: selectedCandidate
@@ -1750,12 +1754,12 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
             ? selectedCandidate.rangePreview.liveOdds
             : previewState.status === "PREVIEWING"
               ? "Calculating..."
-              : "Unavailable",
+              : unavailableOddsLabel,
         breakOdds: selectedCandidate?.breakPreview
             ? selectedCandidate.breakPreview.liveOdds
             : previewState.status === "PREVIEWING"
               ? "Calculating..."
-              : "Unavailable",
+              : unavailableOddsLabel,
         expectedPayout:
             selectedCandidate?.rangePreview?.quantity &&
             selectedCandidate.rangePreview.quantity > 0n
@@ -1797,10 +1801,10 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
             selectedHigherDisplay: selectedCandidate
                 ? formatRawPrice(selectedCandidate.market.higherStrike)
                 : null,
-            rangeOddsLabel: selectedCandidate?.rangePreview?.liveOdds ?? "Unavailable",
-            breakOddsLabel: selectedCandidate?.breakPreview?.liveOdds ?? "Unavailable",
-            rangeOdds: selectedCandidate?.rangePreview?.liveOdds ?? "Unavailable",
-            breakOdds: selectedCandidate?.breakPreview?.liveOdds ?? "Unavailable",
+            rangeOddsLabel: selectedCandidate?.rangePreview?.liveOdds ?? unavailableOddsLabel,
+            breakOddsLabel: selectedCandidate?.breakPreview?.liveOdds ?? unavailableOddsLabel,
+            rangeOdds: selectedCandidate?.rangePreview?.liveOdds ?? unavailableOddsLabel,
+            breakOdds: selectedCandidate?.breakPreview?.liveOdds ?? unavailableOddsLabel,
             previewKey: selectedPreviewKey,
             expectedPreviewKey,
             amountAtomic: budget?.toString() ?? null,

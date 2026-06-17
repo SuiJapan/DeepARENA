@@ -183,74 +183,13 @@ export class ContractDeepArenaClient implements DeepArenaClient {
     }
 
     async listPlayers(): Promise<PlayerSummary[]> {
-        // 方針: オンチェーン Top キャッシュ（Arena の dynamic field）を 1〜2 リクエストで読む。
-        // まだ存在しない場合（アップグレード前/未バックフィル）は従来のテーブル読みにフォールバック。
-        try {
-            const top = await this.listPlayersFromLeaderboard();
-            if (top !== null) return top;
-        } catch {
-            // フォールバックへ
-        }
+        // 獲得額（cumulative_payout）ランキングのため、各プレイヤーの PlayerStats を
+        // テーブルから直接読む。オンチェーン Top キャッシュ（LeaderboardEntry）は
+        // cumulative_payout を保持しないため、この指標では使用しない。
         return this.listPlayersFromTable();
     }
 
-    /**
-     * Arena の LeaderboardKey dynamic field（vector<LeaderboardEntry>）を読み、
-     * 上位 20 件を返す。dynamic field が無ければ null（呼び出し側でフォールバック）。
-     */
-    private async listPlayersFromLeaderboard(): Promise<PlayerSummary[] | null> {
-        const dfEntries = await listDynamicFields(this.config.arenaObjectId);
-        // 型名のパッケージ ID プレフィックスは upgrade 由来で変わりうるため、サフィックス一致で探す。
-        const lbField = dfEntries.find((e) => {
-            if (!isRecord(e.name)) return false;
-            const t = e.name.type;
-            return typeof t === "string" && t.endsWith("::arena::LeaderboardKey");
-        });
-        if (!lbField) return null;
-
-        const fieldObj = await rpc("sui_getObject", [lbField.objectId, { showContent: true }]);
-        if (!isRecord(fieldObj) || !isRecord(fieldObj.data)) return null;
-        const content = (fieldObj.data as Record<string, unknown>).content;
-        if (!isRecord(content)) return null;
-        const fields = readFields(content, "leaderboard.field");
-        const value = fields.value;
-        if (!Array.isArray(value)) return null;
-
-        const players: PlayerSummary[] = [];
-        for (const raw of value) {
-            const entry = isRecord(raw) ? readFields(raw, "leaderboard.entry") : null;
-            if (!entry) continue;
-            try {
-                const playerAddress = readString(entry.player, "entry.player");
-                const managerId = readObjectId(entry.manager_id, "entry.manager_id");
-                const score = readU64(entry.score, "entry.score");
-                const cost = readU64(entry.cumulative_cost, "entry.cumulative_cost");
-                players.push({
-                    address: playerAddress,
-                    displayName: `${playerAddress.slice(0, 6)}...${playerAddress.slice(-4)}`,
-                    rank: players.length + 1,
-                    score: {
-                        atomic: score,
-                        decimals: this.config.quoteDecimals,
-                        symbol: this.config.quoteSymbol,
-                    },
-                    deposited: {
-                        atomic: cost,
-                        decimals: this.config.quoteDecimals,
-                        symbol: this.config.quoteSymbol,
-                    },
-                    predictManagerId: managerId,
-                    isCurrentPlayer: false,
-                });
-            } catch {
-                // skip unreadable entry
-            }
-            if (players.length >= 20) break;
-        }
-        return players;
-    }
-
-    /** 従来方式: players テーブル全件を読み、score 降順で並べる（フォールバック）。 */
+    /** players テーブル全件を読み、獲得額（payout）降順・Total Bet 降順で並べる。 */
     private async listPlayersFromTable(): Promise<PlayerSummary[]> {
         const arenaFields = await getObjectFields(this.config.arenaObjectId);
 
@@ -281,7 +220,9 @@ export class ContractDeepArenaClient implements DeepArenaClient {
                     const stats = isRecord(statsRaw) ? readFields(statsRaw, "player.stats") : null;
                     if (!stats) continue;
 
-                    const score = readU64(stats.score, "score");
+                    // ランキング指標は獲得額（cumulative_payout）。Total Bet は cumulative_cost。
+                    const payout = readU64(stats.cumulative_payout, "cumulative_payout");
+                    const cost = readU64(stats.cumulative_cost, "cumulative_cost");
                     const managerId = readObjectId(stats.manager_id, "manager_id");
 
                     players.push({
@@ -289,12 +230,12 @@ export class ContractDeepArenaClient implements DeepArenaClient {
                         displayName: `${playerAddress.slice(0, 6)}...${playerAddress.slice(-4)}`,
                         rank: 0,
                         score: {
-                            atomic: score,
+                            atomic: payout,
                             decimals: this.config.quoteDecimals,
                             symbol: this.config.quoteSymbol,
                         },
                         deposited: {
-                            atomic: readU64(stats.cumulative_cost, "cumulative_cost"),
+                            atomic: cost,
                             decimals: this.config.quoteDecimals,
                             symbol: this.config.quoteSymbol,
                         },
@@ -308,8 +249,11 @@ export class ContractDeepArenaClient implements DeepArenaClient {
         }
 
         players.sort((a, b) => {
-            const diff = BigInt(b.score.atomic) - BigInt(a.score.atomic);
-            return diff > 0n ? 1 : diff < 0n ? -1 : 0;
+            // 獲得額（payout）降順 → 同額は Total Bet（cumulative_cost）降順。
+            const byPayout = BigInt(b.score.atomic) - BigInt(a.score.atomic);
+            if (byPayout !== 0n) return byPayout > 0n ? 1 : -1;
+            const byBet = BigInt(b.deposited.atomic) - BigInt(a.deposited.atomic);
+            return byBet > 0n ? 1 : byBet < 0n ? -1 : 0;
         });
         players.forEach((p, i) => {
             p.rank = i + 1;

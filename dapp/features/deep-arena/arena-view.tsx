@@ -36,6 +36,7 @@ function formatCloseLabel(ms: number | null): string {
 
 function formatRoundStateLabel(state: PredictRoundMarket["state"] | undefined): string {
     if (state === "BETTING_OPEN") return "LIVE";
+    if (state === "LOCKING_ROUND") return "Calculating...";
     if (state === "FINAL_LIVE") return "Round Locked";
     return state ?? "LIVE";
 }
@@ -81,6 +82,16 @@ function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null })
     const range = usePredictRange(roundMarket);
     const selected = range.direction ?? "RANGE";
     const isRoundLocked = roundMarket?.state === "FINAL_LIVE";
+    const isRoundCalculating = roundMarket?.state === "LOCKING_ROUND";
+    const actionLabel = range.isBettingOpen
+        ? range.direction
+            ? `Enter ${range.direction === "RANGE" ? "Range" : "Break"}`
+            : "Select Range Side"
+        : isRoundCalculating
+          ? "Calculating..."
+          : isRoundLocked
+            ? "Round Locked"
+            : "Betting Closed";
 
     return (
         <div className="panel-view active trade-view" data-panel="range">
@@ -140,7 +151,7 @@ function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null })
                         step="1"
                         type="number"
                         value={range.amount}
-                        disabled={!range.isBettingOpen}
+                        disabled={range.isBusy}
                         onChange={(event) => range.setAmount(event.target.value)}
                     />
                     <span>DUSDC</span>
@@ -151,13 +162,7 @@ function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null })
                     disabled={!range.canEnter}
                     onClick={() => void range.placeRangeBet()}
                 >
-                    {range.isBettingOpen
-                        ? range.direction
-                            ? `Enter ${range.direction === "RANGE" ? "Range Market" : "Break"}`
-                            : "Select Range Side"
-                        : isRoundLocked
-                          ? "Round Locked"
-                          : "Betting Closed"}
+                    {actionLabel}
                 </button>
                 <p className="payout-line muted-line" aria-live="polite">
                     {range.activePositionDirection && range.activePositionCostLabel
