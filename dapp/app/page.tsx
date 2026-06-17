@@ -13,10 +13,10 @@ import {
     type PredictRoundMarket,
     usePredictRound,
 } from "@/features/predict-round/use-predict-round";
+import { WalletStatus } from "@/features/wallet/wallet-status";
 import { deepArenaMockConfig } from "@/lib/deep-arena/config";
 import type { PlayerSummary, TokenAmount } from "@/lib/deep-arena/types";
 import { formatMarketPrice, marketConfig } from "@/lib/market/config";
-import { WalletStatus } from "./wallet-status";
 
 type View = "arena" | "portfolio" | "ranking";
 

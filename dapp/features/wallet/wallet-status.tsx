@@ -2,7 +2,7 @@
 
 import { useCurrentNetwork, useDAppKit, useWalletConnection } from "@mysten/dapp-kit-react";
 import { useState } from "react";
-import { ConnectButton } from "./dapp-kit-client-provider";
+import { ConnectButton } from "@/features/wallet/wallet-provider";
 
 const TESTNET_NETWORK = "testnet";
 

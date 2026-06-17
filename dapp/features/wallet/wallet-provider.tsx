@@ -3,14 +3,14 @@
 import { DAppKitProvider } from "@mysten/dapp-kit-react";
 import type { ConnectButtonProps } from "@mysten/dapp-kit-react/ui";
 import dynamic from "next/dynamic";
-import { dAppKit } from "./dapp-kit";
+import { dAppKit } from "@/features/wallet/dapp-kit";
 
 const DAppKitConnectButton = dynamic(
     () => import("@mysten/dapp-kit-react/ui").then((module) => module.ConnectButton),
     { ssr: false },
 );
 
-export function DAppKitClientProvider({ children }: { children: React.ReactNode }) {
+export function WalletProvider({ children }: { children: React.ReactNode }) {
     return <DAppKitProvider dAppKit={dAppKit}>{children}</DAppKitProvider>;
 }
 
