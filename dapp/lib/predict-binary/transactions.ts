@@ -503,17 +503,23 @@ export function describeMintBreakMoveCalls(input: MintBreakTransactionInput): Mo
 }
 
 export function createRedeemBinaryTransaction(input: RedeemBinaryTransactionInput): Transaction {
+    // DeepARENA の bet::claim_binary 経由で redeem する。
+    // これにより payout が PnL スコア（cumulative_payout）と Top キャッシュに反映される。
+    // claim_binary が内部で permissionless redeem を行い payout を manager 残高へ入れる。
     const tx = new Transaction();
     tx.setSender(input.sender);
-    const key = addMarketKey(tx, input);
     tx.moveCall({
-        target: target("predict", "redeem_permissionless"),
+        target: arenaTarget("bet", "claim_binary"),
         typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
         arguments: [
+            tx.object(PREDICT_BINARY_CONFIG.arenaObjectId),
             tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
             tx.object(input.managerId),
             tx.object(input.oracleId),
-            key,
+            tx.pure.id(input.oracleId),
+            tx.pure.u64(input.expiryMs),
+            tx.pure.u64(input.strike),
+            tx.pure.bool(input.isUp),
             tx.pure.u64(input.quantity),
             tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
         ],
@@ -524,17 +530,22 @@ export function createRedeemBinaryTransaction(input: RedeemBinaryTransactionInpu
 export function createClaimBinaryPayoutTransaction(
     input: RedeemBinaryTransactionInput,
 ): Transaction {
+    // Collect ボタン: DeepARENA bet::claim_binary で redeem（payout を PnL/Top キャッシュへ反映）
+    // → manager から payout 分を withdraw → wallet へ transfer。
     const tx = new Transaction();
     tx.setSender(input.sender);
-    const key = addMarketKey(tx, input);
     tx.moveCall({
-        target: target("predict", "redeem_permissionless"),
+        target: arenaTarget("bet", "claim_binary"),
         typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
         arguments: [
+            tx.object(PREDICT_BINARY_CONFIG.arenaObjectId),
             tx.object(PREDICT_BINARY_CONFIG.predictObjectId),
             tx.object(input.managerId),
             tx.object(input.oracleId),
-            key,
+            tx.pure.id(input.oracleId),
+            tx.pure.u64(input.expiryMs),
+            tx.pure.u64(input.strike),
+            tx.pure.bool(input.isUp),
             tx.pure.u64(input.quantity),
             tx.object(PREDICT_BINARY_CONFIG.clockObjectId),
         ],
@@ -551,14 +562,9 @@ export function createClaimBinaryPayoutTransaction(
 export function describeClaimBinaryPayoutMoveCalls(): MoveCallSummary[] {
     return [
         {
-            target: target("market_key", "new"),
-            typeArguments: [],
-            purpose: "build Binary MarketKey",
-        },
-        {
-            target: target("predict", "redeem_permissionless"),
+            target: arenaTarget("bet", "claim_binary"),
             typeArguments: [PREDICT_BINARY_CONFIG.quoteCoinType],
-            purpose: "redeem winning Binary position into PredictManager balance",
+            purpose: "claim winning Binary via DeepARENA (updates PnL) into PredictManager balance",
         },
         {
             target: target("predict_manager", "withdraw"),

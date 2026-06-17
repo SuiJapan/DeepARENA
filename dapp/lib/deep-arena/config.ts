@@ -30,7 +30,7 @@ export const deepArenaMockConfig: DeepArenaConfig = {
     predictServerUrl: "https://predict-server.testnet.mystenlabs.com",
     deepArenaPackageId:
         process.env.NEXT_PUBLIC_DEEP_ARENA_PACKAGE_ID ??
-        "0xb3b546a75389e222acd043d4ce5a4d85b9a616ec55f98ede5e50d89b019a22aa",
+        "0x45de6f4b3ba9716c43127d2f320d11cecdd632c5763517264cfaa4938e612234",
     arenaObjectId:
         process.env.NEXT_PUBLIC_ARENA_OBJECT_ID ??
         "0xdb259dd56458b3308dcd0536ced30e5145d1168dcd958539820e512686025bdf",

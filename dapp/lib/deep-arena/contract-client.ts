@@ -183,6 +183,75 @@ export class ContractDeepArenaClient implements DeepArenaClient {
     }
 
     async listPlayers(): Promise<PlayerSummary[]> {
+        // 方針: オンチェーン Top キャッシュ（Arena の dynamic field）を 1〜2 リクエストで読む。
+        // まだ存在しない場合（アップグレード前/未バックフィル）は従来のテーブル読みにフォールバック。
+        try {
+            const top = await this.listPlayersFromLeaderboard();
+            if (top !== null) return top;
+        } catch {
+            // フォールバックへ
+        }
+        return this.listPlayersFromTable();
+    }
+
+    /**
+     * Arena の LeaderboardKey dynamic field（vector<LeaderboardEntry>）を読み、
+     * 上位 20 件を返す。dynamic field が無ければ null（呼び出し側でフォールバック）。
+     */
+    private async listPlayersFromLeaderboard(): Promise<PlayerSummary[] | null> {
+        const dfEntries = await listDynamicFields(this.config.arenaObjectId);
+        // 型名のパッケージ ID プレフィックスは upgrade 由来で変わりうるため、サフィックス一致で探す。
+        const lbField = dfEntries.find((e) => {
+            if (!isRecord(e.name)) return false;
+            const t = e.name.type;
+            return typeof t === "string" && t.endsWith("::arena::LeaderboardKey");
+        });
+        if (!lbField) return null;
+
+        const fieldObj = await rpc("sui_getObject", [lbField.objectId, { showContent: true }]);
+        if (!isRecord(fieldObj) || !isRecord(fieldObj.data)) return null;
+        const content = (fieldObj.data as Record<string, unknown>).content;
+        if (!isRecord(content)) return null;
+        const fields = readFields(content, "leaderboard.field");
+        const value = fields.value;
+        if (!Array.isArray(value)) return null;
+
+        const players: PlayerSummary[] = [];
+        for (const raw of value) {
+            const entry = isRecord(raw) ? readFields(raw, "leaderboard.entry") : null;
+            if (!entry) continue;
+            try {
+                const playerAddress = readString(entry.player, "entry.player");
+                const managerId = readObjectId(entry.manager_id, "entry.manager_id");
+                const score = readU64(entry.score, "entry.score");
+                const cost = readU64(entry.cumulative_cost, "entry.cumulative_cost");
+                players.push({
+                    address: playerAddress,
+                    displayName: `${playerAddress.slice(0, 6)}...${playerAddress.slice(-4)}`,
+                    rank: players.length + 1,
+                    score: {
+                        atomic: score,
+                        decimals: this.config.quoteDecimals,
+                        symbol: this.config.quoteSymbol,
+                    },
+                    deposited: {
+                        atomic: cost,
+                        decimals: this.config.quoteDecimals,
+                        symbol: this.config.quoteSymbol,
+                    },
+                    predictManagerId: managerId,
+                    isCurrentPlayer: false,
+                });
+            } catch {
+                // skip unreadable entry
+            }
+            if (players.length >= 20) break;
+        }
+        return players;
+    }
+
+    /** 従来方式: players テーブル全件を読み、score 降順で並べる（フォールバック）。 */
+    private async listPlayersFromTable(): Promise<PlayerSummary[]> {
         const arenaFields = await getObjectFields(this.config.arenaObjectId);
 
         // Table<address, PlayerStats> → { fields: { id: { id: "0xTABLE_ID" }, size: "N" } }
