@@ -130,6 +130,8 @@ public fun create_arena<Quote>(
 
 /// アリーナに参加登録する。
 /// 参加者自身の PredictManager を紐付ける。同一 manager は 1 アリーナに 1 回のみ登録可。
+/// upgrade 互換のため &TxContext を維持（&mut TxContext への変更は upgrade 後に不可）。
+#[allow(lint(prefer_mut_tx_context))]
 public fun join_arena<Quote>(
     arena: &mut Arena<Quote>,
     manager: &PredictManager,
