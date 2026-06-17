@@ -7,9 +7,9 @@ import {
     useDAppKit,
 } from "@mysten/dapp-kit-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PredictRoundMarket } from "@/src/features/predict-round/use-predict-round";
-import { requestBalanceRefresh } from "@/src/lib/balance-refresh";
-import { formatTokenAmount, parseTokenAmount } from "@/src/lib/plp-sandbox/amounts";
+import type { PredictRoundMarket } from "@/features/predict-round/use-predict-round";
+import { requestBalanceRefresh } from "@/lib/balance-refresh";
+import { formatTokenAmount, parseTokenAmount } from "@/lib/plp-sandbox/amounts";
 import {
     type BtcBinaryMarket,
     type BudgetedTradePreview,
@@ -27,14 +27,14 @@ import {
     readRedeemEvent,
     readWalletQuoteBalance,
     saveCachedManagerId,
-} from "@/src/lib/predict-binary/client";
-import { PREDICT_BINARY_CONFIG, predictBinaryExplorerUrl } from "@/src/lib/predict-binary/config";
-import { readSuiEventPayloads } from "@/src/lib/predict-binary/events";
-import { formatBinaryOddsFromQuantity } from "@/src/lib/predict-binary/odds";
+} from "@/lib/predict-binary/client";
+import { PREDICT_BINARY_CONFIG, predictBinaryExplorerUrl } from "@/lib/predict-binary/config";
+import { readSuiEventPayloads } from "@/lib/predict-binary/events";
+import { formatBinaryOddsFromQuantity } from "@/lib/predict-binary/odds";
 import {
     buildBinaryPreviewCacheKey,
     buildBinaryPreviewRequestKey,
-} from "@/src/lib/predict-binary/preview-key";
+} from "@/lib/predict-binary/preview-key";
 import {
     calcFee,
     calcMaxTotalCost,
@@ -45,8 +45,8 @@ import {
     describeCreatePredictManagerMoveCalls,
     describeMintBinaryMoveCalls,
     maxStakeWithinDeposit,
-} from "@/src/lib/predict-binary/transactions";
-import { isWalletUserRejection, readWalletCancellationDebug } from "@/src/lib/wallet-errors";
+} from "@/lib/predict-binary/transactions";
+import { isWalletUserRejection, readWalletCancellationDebug } from "@/lib/wallet-errors";
 
 /** Sui MoveAbort で EAlreadyJoined(=3) が返った場合に true */
 function isArenaAlreadyJoinedError(error: unknown): boolean {

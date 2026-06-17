@@ -1,4 +1,4 @@
-import { deepArenaMockConfig } from "@/src/lib/deep-arena/config";
+import { deepArenaMockConfig } from "@/lib/deep-arena/config";
 
 export const PLP_SANDBOX_CONFIG = {
     network: "testnet",

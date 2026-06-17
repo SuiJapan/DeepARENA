@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { PREDICT_BINARY_CONFIG } from "@/src/lib/predict-binary/config";
+import { PREDICT_BINARY_CONFIG } from "@/lib/predict-binary/config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

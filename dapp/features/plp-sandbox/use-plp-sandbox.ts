@@ -7,19 +7,19 @@ import {
     useDAppKit,
 } from "@mysten/dapp-kit-react";
 import { useCallback, useEffect, useState } from "react";
-import { BALANCE_REFRESH_EVENT } from "@/src/lib/balance-refresh";
+import { BALANCE_REFRESH_EVENT } from "@/lib/balance-refresh";
 import {
     formatTokenAmount,
     formatTokenInputAmount,
     parseTokenAmount,
-} from "@/src/lib/plp-sandbox/amounts";
+} from "@/lib/plp-sandbox/amounts";
 import {
     hasPlpSandboxPackageId,
     PLP_SANDBOX_CONFIG,
     plpSandboxExplorerUrl,
-} from "@/src/lib/plp-sandbox/config";
-import { createPlpSandboxTransaction } from "@/src/lib/plp-sandbox/transactions";
-import { isWalletUserRejection, readWalletCancellationDebug } from "@/src/lib/wallet-errors";
+} from "@/lib/plp-sandbox/config";
+import { createPlpSandboxTransaction } from "@/lib/plp-sandbox/transactions";
+import { isWalletUserRejection, readWalletCancellationDebug } from "@/lib/wallet-errors";
 
 type PlpSandboxStatus = "idle" | "loading" | "success" | "error";
 

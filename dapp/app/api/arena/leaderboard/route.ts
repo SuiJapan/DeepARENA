@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { deepArenaMockConfig } from "@/src/lib/deep-arena/config";
-import { ContractDeepArenaClient } from "@/src/lib/deep-arena/contract-client";
-import type { PlayerSummary } from "@/src/lib/deep-arena/types";
+import { deepArenaMockConfig } from "@/lib/deep-arena/config";
+import { ContractDeepArenaClient } from "@/lib/deep-arena/contract-client";
+import type { PlayerSummary } from "@/lib/deep-arena/types";
 
 export const revalidate = 30;
 export const runtime = "nodejs";

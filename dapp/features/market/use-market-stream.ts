@@ -1,15 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { MarketReference } from "@/src/lib/market/config";
-import { marketConfig } from "@/src/lib/market/config";
-import { appendMarketPoint } from "@/src/lib/market/normalize";
+import type { MarketReference } from "@/lib/market/config";
+import { marketConfig } from "@/lib/market/config";
+import { appendMarketPoint } from "@/lib/market/normalize";
 import type {
     ChartPoint,
     MarketStreamEvent,
     MarketStreamStatus,
     MarketTick,
-} from "@/src/lib/market/types";
+} from "@/lib/market/types";
 
 type MarketConnectionStatus = Uppercase<MarketStreamStatus>;
 

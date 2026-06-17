@@ -8,7 +8,7 @@
         "start": "next start",
         "lint": "biome check .",
         "format": "biome check --write .",
-        "test": "node --experimental-strip-types --test 'src/**/*.test.ts'"
+        "test": "node --experimental-strip-types --test 'lib/**/*.test.ts'"
     },
     "dependencies": {
         "@mysten/dapp-kit-react": "2.0.3",

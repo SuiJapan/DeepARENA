@@ -11,9 +11,9 @@ import {
     POSITION_MINTED_EVENT_TYPE,
     RANGE_MINTED_EVENT_TYPE,
     POSITION_REDEEMED_EVENT_TYPE,
-} from "@/src/lib/predict-binary/client";
-import { PREDICT_BINARY_CONFIG } from "@/src/lib/predict-binary/config";
-import { mapWithConcurrency } from "@/src/lib/utils/concurrent";
+} from "@/lib/predict-binary/client";
+import { PREDICT_BINARY_CONFIG } from "@/lib/predict-binary/config";
+import { mapWithConcurrency } from "@/lib/utils/concurrent";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

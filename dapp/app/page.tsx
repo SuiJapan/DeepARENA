@@ -1,21 +1,21 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { RankingSection } from "@/src/features/deep-arena/ranking-section";
-import { useDeepArena } from "@/src/features/deep-arena/use-deep-arena";
-import { MarketChart } from "@/src/features/market/market-chart";
-import { useMarketStream } from "@/src/features/market/use-market-stream";
-import { PlpSandboxPanel } from "@/src/features/plp-sandbox/plp-sandbox-panel";
-import { BinaryPortfolioSection } from "@/src/features/predict-binary/binary-portfolio-section";
-import { PredictBinaryCard } from "@/src/features/predict-binary/predict-binary-card";
-import { usePredictRange } from "@/src/features/predict-range/use-predict-range";
+import { RankingSection } from "@/features/deep-arena/ranking-section";
+import { useDeepArena } from "@/features/deep-arena/use-deep-arena";
+import { MarketChart } from "@/features/market/market-chart";
+import { useMarketStream } from "@/features/market/use-market-stream";
+import { PlpSandboxPanel } from "@/features/plp-sandbox/plp-sandbox-panel";
+import { BinaryPortfolioSection } from "@/features/predict-binary/binary-portfolio-section";
+import { PredictBinaryCard } from "@/features/predict-binary/predict-binary-card";
+import { usePredictRange } from "@/features/predict-range/use-predict-range";
 import {
     type PredictRoundMarket,
     usePredictRound,
-} from "@/src/features/predict-round/use-predict-round";
-import { deepArenaMockConfig } from "@/src/lib/deep-arena/config";
-import type { PlayerSummary, TokenAmount } from "@/src/lib/deep-arena/types";
-import { formatMarketPrice, marketConfig } from "@/src/lib/market/config";
+} from "@/features/predict-round/use-predict-round";
+import { deepArenaMockConfig } from "@/lib/deep-arena/config";
+import type { PlayerSummary, TokenAmount } from "@/lib/deep-arena/types";
+import { formatMarketPrice, marketConfig } from "@/lib/market/config";
 import { WalletStatus } from "./wallet-status";
 
 type View = "arena" | "portfolio" | "ranking";

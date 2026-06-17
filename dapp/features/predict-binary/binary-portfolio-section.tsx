@@ -2,27 +2,27 @@
 
 import { useCurrentAccount, useCurrentClient, useDAppKit } from "@mysten/dapp-kit-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { PredictRoundMarket } from "@/src/features/predict-round/use-predict-round";
-import { formatTokenAmount } from "@/src/lib/plp-sandbox/amounts";
+import type { PredictRoundMarket } from "@/features/predict-round/use-predict-round";
+import { formatTokenAmount } from "@/lib/plp-sandbox/amounts";
 import {
     type MintedPositionEvent,
     type RangeMintEvent,
     type RedeemedPositionEvent,
     readDigest,
     readRedeemEvent,
-} from "@/src/lib/predict-binary/client";
-import { PREDICT_BINARY_CONFIG, predictBinaryExplorerUrl } from "@/src/lib/predict-binary/config";
-import { formatBinaryOddsFromQuantity } from "@/src/lib/predict-binary/odds";
+} from "@/lib/predict-binary/client";
+import { PREDICT_BINARY_CONFIG, predictBinaryExplorerUrl } from "@/lib/predict-binary/config";
+import { formatBinaryOddsFromQuantity } from "@/lib/predict-binary/odds";
 import {
     createClaimBinaryPayoutTransaction,
     createWithdrawManagerQuoteTransaction,
     describeClaimBinaryPayoutMoveCalls,
-} from "@/src/lib/predict-binary/transactions";
+} from "@/lib/predict-binary/transactions";
 import {
     isWalletUserRejection,
     readWalletCancellationDebug,
     readWalletErrorMessage,
-} from "@/src/lib/wallet-errors";
+} from "@/lib/wallet-errors";
 
 type PortfolioType = "Binary" | "Range" | "Break";
 type PortfolioSide = "UP" | "DOWN" | "RANGE" | "BREAK";

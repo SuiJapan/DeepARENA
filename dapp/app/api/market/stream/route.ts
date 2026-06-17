@@ -1,5 +1,5 @@
-import { createDeepbookPredictMarketStream } from "@/src/lib/market/deepbook-predict-server";
-import type { MarketStreamEvent } from "@/src/lib/market/types";
+import { createDeepbookPredictMarketStream } from "@/lib/market/deepbook-predict-server";
+import type { MarketStreamEvent } from "@/lib/market/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

@@ -1,14 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { DeepArenaClient } from "@/src/lib/deep-arena/client";
-import { createDeepArenaClient } from "@/src/lib/deep-arena/factory";
+import type { DeepArenaClient } from "@/lib/deep-arena/client";
+import { createDeepArenaClient } from "@/lib/deep-arena/factory";
 import type {
     ActionPreview,
     BinaryActionInput,
     DeepArenaSnapshot,
     RangeActionInput,
-} from "@/src/lib/deep-arena/types";
+} from "@/lib/deep-arena/types";
 
 async function loadSnapshot(client: DeepArenaClient): Promise<DeepArenaSnapshot> {
     const [arena, players, binaryMarkets, rangeMarkets, vault, plp, events] = await Promise.all([

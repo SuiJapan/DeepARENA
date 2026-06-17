@@ -1,7 +1,7 @@
 "use client";
 
-import { formatMarketPrice, marketConfig } from "@/src/lib/market/config";
-import { calculateChangePercent, calculateChartPath } from "@/src/lib/market/normalize";
+import { formatMarketPrice, marketConfig } from "@/lib/market/config";
+import { calculateChangePercent, calculateChartPath } from "@/lib/market/normalize";
 import type { UseMarketStreamResult } from "./use-market-stream";
 
 const percentFormatter = new Intl.NumberFormat("en-US", {

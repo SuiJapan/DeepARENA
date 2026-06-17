@@ -7,9 +7,9 @@ import {
     useDAppKit,
 } from "@mysten/dapp-kit-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PredictRoundMarket } from "@/src/features/predict-round/use-predict-round";
-import { requestBalanceRefresh } from "@/src/lib/balance-refresh";
-import { formatTokenAmount, parseTokenAmount } from "@/src/lib/plp-sandbox/amounts";
+import type { PredictRoundMarket } from "@/features/predict-round/use-predict-round";
+import { requestBalanceRefresh } from "@/lib/balance-refresh";
+import { formatTokenAmount, parseTokenAmount } from "@/lib/plp-sandbox/amounts";
 import {
     checkArenaPlayerJoined,
     findPredictManager,
@@ -20,9 +20,9 @@ import {
     readPositionMintedEvent,
     readRangeMintedEvent,
     readWalletQuoteBalance,
-} from "@/src/lib/predict-binary/client";
-import { PREDICT_BINARY_CONFIG } from "@/src/lib/predict-binary/config";
-import { formatBinaryOddsFromQuantity } from "@/src/lib/predict-binary/odds";
+} from "@/lib/predict-binary/client";
+import { PREDICT_BINARY_CONFIG } from "@/lib/predict-binary/config";
+import { formatBinaryOddsFromQuantity } from "@/lib/predict-binary/odds";
 import {
     calcMaxTotalCost,
     createJoinArenaTransaction,
@@ -33,18 +33,18 @@ import {
     describeMintBreakMoveCalls,
     describeMintRangeMoveCalls,
     maxStakeWithinDeposit,
-} from "@/src/lib/predict-binary/transactions";
+} from "@/lib/predict-binary/transactions";
 import {
     RANGE_WIDTH_CANDIDATES_TICKS,
     rangeProbabilityBps,
     selectRangeWidthQuote,
-} from "@/src/lib/predict-range/range-width";
-import { GRID_TICKS } from "@/src/lib/predict-round/round";
+} from "@/lib/predict-range/range-width";
+import { GRID_TICKS } from "@/lib/predict-round/round";
 import {
     isWalletUserRejection,
     readWalletCancellationDebug,
     readWalletErrorMessage,
-} from "@/src/lib/wallet-errors";
+} from "@/lib/wallet-errors";
 
 export type RangeDirection = "RANGE" | "BREAK";
 export type RangePreviewStatus = "IDLE" | "PREVIEWING" | "READY" | "ERROR";

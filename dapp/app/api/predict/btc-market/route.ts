@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { warmBinaryPreviewCache } from "@/app/api/predict/binary-preview/route";
-import { PREDICT_BINARY_CONFIG } from "@/src/lib/predict-binary/config";
+import { PREDICT_BINARY_CONFIG } from "@/lib/predict-binary/config";
 import {
     buildSettlementRoundLock,
     calculateBettingClose,
@@ -9,7 +9,7 @@ import {
     type OracleCandidate,
     type PredictRoundStatus,
     selectCurrentBtcOracle,
-} from "@/src/lib/predict-round/round";
+} from "@/lib/predict-round/round";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

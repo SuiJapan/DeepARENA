@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { plpSandboxSuiScanPlpUrl } from "@/src/lib/plp-sandbox/config";
+import { plpSandboxSuiScanPlpUrl } from "@/lib/plp-sandbox/config";
 import { usePlpSandbox } from "./use-plp-sandbox";
 
 type PlpSandboxMode = "supply" | "withdraw";

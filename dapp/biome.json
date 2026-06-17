@@ -15,8 +15,10 @@
             "tsconfig.json",
             "biome.json",
             "next-env.d.ts",
-            "src/**/*.ts",
-            "src/**/*.tsx"
+            "features/**/*.ts",
+            "features/**/*.tsx",
+            "lib/**/*.ts",
+            "lib/**/*.tsx"
         ]
     },
     "formatter": {

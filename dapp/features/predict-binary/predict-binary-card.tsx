@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { PredictRoundMarket } from "@/src/features/predict-round/use-predict-round";
+import type { PredictRoundMarket } from "@/features/predict-round/use-predict-round";
 import { type BinaryDirection, usePredictBinary } from "./use-predict-binary";
 
 export function PredictBinaryCard({

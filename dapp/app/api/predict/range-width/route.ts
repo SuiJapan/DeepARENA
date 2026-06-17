@@ -2,15 +2,15 @@ import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { NextResponse } from "next/server";
 import {
     previewRangeTradeAmountsServerOnly,
-} from "@/src/lib/predict-binary/client";
-import { PREDICT_BINARY_CONFIG } from "@/src/lib/predict-binary/config";
+} from "@/lib/predict-binary/client";
+import { PREDICT_BINARY_CONFIG } from "@/lib/predict-binary/config";
 import {
     RANGE_WIDTH_CANDIDATES_TICKS,
     rangeProbabilityBps,
     selectRangeWidthQuote,
     type RangeWidthQuote,
-} from "@/src/lib/predict-range/range-width";
-import { getSharedPreviewCache } from "@/src/lib/server/preview-cache";
+} from "@/lib/predict-range/range-width";
+import { getSharedPreviewCache } from "@/lib/server/preview-cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

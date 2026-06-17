@@ -2,7 +2,7 @@
 
 import { useCurrentAccount } from "@mysten/dapp-kit-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { PlayerSummary, TokenAmount } from "@/src/lib/deep-arena/types";
+import type { PlayerSummary, TokenAmount } from "@/lib/deep-arena/types";
 
 const RANKING_PAGE_SIZE = 20;
 

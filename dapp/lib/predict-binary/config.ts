@@ -1,4 +1,4 @@
-import { deepArenaMockConfig } from "@/src/lib/deep-arena/config";
+import { deepArenaMockConfig } from "@/lib/deep-arena/config";
 
 export const PREDICT_BINARY_CONFIG = {
     network: "testnet",

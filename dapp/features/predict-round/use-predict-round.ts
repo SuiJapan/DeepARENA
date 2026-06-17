@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { formatRoundCountdownClock, type PredictRoundStatus } from "@/src/lib/predict-round/round";
+import { formatRoundCountdownClock, type PredictRoundStatus } from "@/lib/predict-round/round";
 
 export interface PredictOracleSummary {
     oracleId: string;
