@@ -1,36 +1,40 @@
 "use client";
 
+import Link from "next/link";
 import { WalletStatus } from "@/features/wallet/wallet-status";
 import { deepArenaMockConfig } from "@/lib/deep-arena/config";
 
 export type DashboardView = "arena" | "portfolio" | "ranking";
 
+const NAV_ITEMS: ReadonlyArray<{ href: string; label: DashboardView }> = [
+    { href: "/", label: "arena" },
+    { href: "/portfolio", label: "portfolio" },
+    { href: "/ranking", label: "ranking" },
+];
+
 export function DashboardShell({
     activeView,
     children,
-    onViewChange,
 }: {
     activeView: DashboardView;
     children: React.ReactNode;
-    onViewChange: (view: DashboardView) => void;
 }) {
     return (
         <main className="app-shell">
             <header className="app-header">
-                <button className="brand" type="button" onClick={() => onViewChange("arena")}>
+                <Link className="brand" href="/">
                     <span className="brand-mark">DA</span>
                     <strong>Deep Arena</strong>
-                </button>
+                </Link>
                 <nav aria-label="Primary navigation">
-                    {(["arena", "portfolio", "ranking"] as const).map((item) => (
-                        <button
-                            type="button"
-                            data-active={activeView === item}
-                            key={item}
-                            onClick={() => onViewChange(item)}
+                    {NAV_ITEMS.map((item) => (
+                        <Link
+                            data-active={activeView === item.label}
+                            href={item.href}
+                            key={item.label}
                         >
-                            {item}
-                        </button>
+                            {item.label}
+                        </Link>
                     ))}
                 </nav>
                 <div
