@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { DAppKitClientProvider } from "./dapp-kit-client-provider";
+import { Providers } from "./providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -15,7 +15,7 @@ export default function RootLayout({
     return (
         <html lang="en">
             <body>
-                <DAppKitClientProvider>{children}</DAppKitClientProvider>
+                <Providers>{children}</Providers>
             </body>
         </html>
     );
