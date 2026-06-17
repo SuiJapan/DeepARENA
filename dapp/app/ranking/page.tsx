@@ -8,7 +8,7 @@ export default function RankingPage() {
     const { error } = useDeepArena();
 
     return (
-        <DashboardShell activeView="ranking">
+        <DashboardShell activeView="leaderboard">
             {error ? <div className="error-banner">{error}</div> : null}
 
             <RankingView />

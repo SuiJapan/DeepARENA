@@ -4,8 +4,12 @@ import { useState } from "react";
 import type { PredictRoundMarket } from "@/features/predict-round/use-predict-round";
 import { type BinaryDirection, usePredictBinary } from "./use-predict-binary";
 
+function isCompactOddsLabel(value: string): boolean {
+    const normalized = value.trim().toLowerCase();
+    return !/\d/.test(normalized);
+}
+
 export function PredictBinaryCard({
-    countdownLabel,
     roundMarket,
     spotTimestampMs,
 }: {
@@ -14,148 +18,115 @@ export function PredictBinaryCard({
     spotTimestampMs: number | null;
 }) {
     const binary = usePredictBinary(roundMarket, spotTimestampMs);
-    const [direction, setDirection] = useState<BinaryDirection | null>(null);
+    const [direction, setDirection] = useState<BinaryDirection | null>("UP");
     const canEnter =
         direction === "UP" ? binary.canBetUp : direction === "DOWN" ? binary.canBetDown : false;
     const isBettingOpen = roundMarket?.state === "BETTING_OPEN";
-    const hasActiveRound = Boolean(roundMarket?.currentOracle && roundMarket.round);
-    const hasSidePosition = Boolean(binary.sidePositionLabels.UP || binary.sidePositionLabels.DOWN);
-    const countdownTitle = isBettingOpen ? "BETTING CLOSES IN" : "SETTLES IN";
-    const inactiveTitle =
-        roundMarket?.state === "LOCKING_ROUND"
-            ? "LOCKING ROUND"
-            : roundMarket?.state === "ROUND_LOCK_ERROR"
-              ? "ROUND UNAVAILABLE"
-              : roundMarket?.state === "ROUND_DATA_ERROR"
-                ? "ROUND DATA ERROR"
-                : "NO ACTIVE ROUND";
+    const isRoundLocked = roundMarket?.state === "FINAL_LIVE";
     const inputDisabled = binary.isBusy || !isBettingOpen;
 
     return (
-        <section className="trade-card binary next-binary-card">
-            <div className="card-title">
+        <div className="panel-view active trade-view" data-panel="binary">
+            <div className="mode-topper trade-topper">
                 <div>
-                    <span>BINARY</span>
-                    <h2>BTC</h2>
+                    <p className="mode-eyebrow">Active mode</p>
+                    <h2 className="mode-title">Binary Duel</h2>
+                    <p className="mode-copy">Above or below the strike when the bell tolls?</p>
                 </div>
-                <div className="binary-title-countdown" aria-live="polite">
-                    <span>{hasActiveRound ? countdownTitle : inactiveTitle}</span>
-                    <strong>{hasActiveRound ? (countdownLabel ?? "00:00:00") : "--:--:--"}</strong>
-                </div>
+                <span className="fee-pill">{binary.feeBpsLabel}</span>
             </div>
 
-            <fieldset className="direction-picker">
-                <legend>Choose prediction direction</legend>
+            <div className="duel-board binary-board">
                 <button
+                    className={`duel-choice choice-button up-choice${direction === "UP" ? " selected" : ""}`}
                     type="button"
-                    className="direction-up"
-                    data-active={direction === "UP"}
-                    aria-pressed={direction === "UP"}
                     disabled={inputDisabled}
+                    aria-pressed={direction === "UP"}
                     onClick={() => setDirection(direction === "UP" ? null : "UP")}
                 >
-                    <span>UP</span>
-                    <strong>{binary.upOdds}</strong>
+                    <span className="duel-sigil blade-sigil blade-sigil-up" aria-hidden="true" />
+                    <span className="duel-name">UP</span>
+                    <span
+                        className={`duel-odds${isCompactOddsLabel(binary.upOdds) ? " duel-odds-status" : ""}`}
+                    >
+                        {binary.upOdds}
+                    </span>
                 </button>
+                <div className="duel-vs" aria-hidden="true">
+                    VS
+                </div>
                 <button
+                    className={`duel-choice choice-button down-choice${direction === "DOWN" ? " selected" : ""}`}
                     type="button"
-                    className="direction-down"
-                    data-active={direction === "DOWN"}
-                    aria-pressed={direction === "DOWN"}
                     disabled={inputDisabled}
+                    aria-pressed={direction === "DOWN"}
                     onClick={() => setDirection(direction === "DOWN" ? null : "DOWN")}
                 >
-                    <span>DOWN</span>
-                    <strong>{binary.downOdds}</strong>
+                    <span className="duel-sigil blade-sigil blade-sigil-down" aria-hidden="true" />
+                    <span className="duel-name">DOWN</span>
+                    <span
+                        className={`duel-odds${isCompactOddsLabel(binary.downOdds) ? " duel-odds-status" : ""}`}
+                    >
+                        {binary.downOdds}
+                    </span>
                 </button>
-                {hasSidePosition ? (
-                    <>
-                        {binary.sidePositionLabels.UP ? (
-                            <div className="binary-position-chip position-up">
-                                <span>YOUR BET</span>
-                                <strong>{binary.sidePositionLabels.UP.bet}</strong>
-                                {binary.sidePositionLabels.UP.entryOdds ? (
-                                    <em>Entry {binary.sidePositionLabels.UP.entryOdds}</em>
-                                ) : null}
-                            </div>
-                        ) : (
-                            <div className="binary-position-chip position-empty" aria-hidden />
-                        )}
-                        {binary.sidePositionLabels.DOWN ? (
-                            <div className="binary-position-chip position-down">
-                                <span>YOUR BET</span>
-                                <strong>{binary.sidePositionLabels.DOWN.bet}</strong>
-                                {binary.sidePositionLabels.DOWN.entryOdds ? (
-                                    <em>Entry {binary.sidePositionLabels.DOWN.entryOdds}</em>
-                                ) : null}
-                            </div>
-                        ) : (
-                            <div className="binary-position-chip position-empty" aria-hidden />
-                        )}
-                    </>
-                ) : null}
-            </fieldset>
+            </div>
 
-            <label className="binary-amount">
-                <span>
-                    BET AMOUNT{" "}
-                    <small style={{ opacity: 0.6, fontWeight: "normal" }}>
-                        {binary.feeBpsLabel}
-                    </small>
-                </span>
-                <div>
+            <div className="stake-card">
+                <label htmlFor="binary-stake">Your BET</label>
+                <div className="stake-input-row">
                     <input
-                        type="number"
+                        id="binary-stake"
+                        className="amount-input stake-input"
                         min="0"
                         step="0.000001"
+                        type="number"
                         value={binary.amount}
                         disabled={inputDisabled}
                         onChange={(event) => binary.setAmount(event.target.value)}
                     />
-                    <strong>DUSDC</strong>
+                    <span>DUSDC</span>
                 </div>
-            </label>
 
-            <button
-                type="button"
-                className="binary-enter-button"
-                disabled={!canEnter}
-                onClick={() => direction && void binary.placeBet(direction)}
-            >
-                {isBettingOpen ? (direction ? `ENTER ${direction}` : "select") : "BETTING CLOSED"}
-            </button>
+                <button
+                    className="primary-button cta-full arena-cta"
+                    type="button"
+                    disabled={!canEnter}
+                    onClick={() => direction && void binary.placeBet(direction)}
+                >
+                    {isBettingOpen
+                        ? direction
+                            ? `Enter ${direction}`
+                            : "Select Direction"
+                        : isRoundLocked
+                          ? "Round Locked"
+                          : "Betting Closed"}
+                </button>
 
-            <div className="binary-entry-status" aria-live="polite">
-                {binary.lastRedeem ? (
-                    <>
-                        <span>{binary.lastRedeem.payout > 0n ? "YOU WON" : "ROUND LOST"}</span>
-                        {binary.settledEntryOddsLabel ? (
-                            <span>ENTRY ODDS {binary.settledEntryOddsLabel}</span>
-                        ) : null}
-                        {binary.payoutLabel ? <span>PAYOUT {binary.payoutLabel}</span> : null}
-                    </>
-                ) : binary.position && binary.position.cost > 0n ? (
-                    <>
-                        <span>YOUR PICK {binary.position.direction}</span>
-                        {binary.entryCostLabel ? <span>BET {binary.entryCostLabel}</span> : null}
-                        {binary.entryOddsLabel ? (
-                            <span>ENTRY ODDS {binary.entryOddsLabel}</span>
-                        ) : null}
-                    </>
-                ) : null}
-                {binary.txStatus === "FAILED" ? <span>{binary.message}</span> : null}
-                {binary.txStatus !== "FAILED" &&
-                direction &&
-                !canEnter &&
-                binary.oddsUnavailableLabel ? (
-                    <span>{binary.oddsUnavailableLabel}</span>
-                ) : null}
-                {binary.explorerUrl ? (
-                    <a href={binary.explorerUrl} target="_blank" rel="noreferrer">
-                        View transaction
-                    </a>
-                ) : null}
+                <p className="payout-line muted-line" aria-live="polite">
+                    {binary.lastRedeem
+                        ? binary.payoutLabel
+                            ? `Payout ${binary.payoutLabel}`
+                            : binary.lastRedeem.payout > 0n
+                              ? "You won"
+                              : "Round lost"
+                        : binary.position && binary.position.cost > 0n
+                          ? `Your pick ${binary.position.direction}${binary.entryCostLabel ? ` · ${binary.entryCostLabel}` : ""}${binary.entryOddsLabel ? ` · ${binary.entryOddsLabel}` : ""}`
+                          : binary.txStatus === "FAILED"
+                            ? binary.message
+                            : direction && !canEnter && binary.oddsUnavailableLabel
+                              ? binary.oddsUnavailableLabel
+                              : ""}
+                    {binary.explorerUrl ? (
+                        <>
+                            {" "}
+                            <a href={binary.explorerUrl} target="_blank" rel="noreferrer">
+                                View transaction
+                            </a>
+                        </>
+                    ) : null}
+                </p>
             </div>
-        </section>
+        </div>
     );
 }
