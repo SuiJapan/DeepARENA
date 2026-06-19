@@ -1551,6 +1551,24 @@ export function usePredictBinary(
                 : null,
             explorerUrl: lastDigest ? predictBinaryExplorerUrl(lastDigest) : null,
             feeBpsLabel: `FEE ${PREDICT_BINARY_CONFIG.feeBps / 100}%`,
+            walletBalanceLabel:
+                walletBalance > 0n
+                    ? formatTokenAmount(walletBalance, PREDICT_BINARY_CONFIG.quoteDecimals)
+                    : null,
+            activeBetSummary: (() => {
+                const parts: string[] = [];
+                if (sidePositions.UP && sidePositions.UP.cost > 0n) {
+                    parts.push(
+                        `UP ${formatTokenAmount(sidePositions.UP.cost, PREDICT_BINARY_CONFIG.quoteDecimals)}`,
+                    );
+                }
+                if (sidePositions.DOWN && sidePositions.DOWN.cost > 0n) {
+                    parts.push(
+                        `DOWN ${formatTokenAmount(sidePositions.DOWN.cost, PREDICT_BINARY_CONFIG.quoteDecimals)}`,
+                    );
+                }
+                return parts.length > 0 ? parts.join(", ") : null;
+            })(),
             placeBet,
         };
     }, [
@@ -1573,5 +1591,6 @@ export function usePredictBinary(
         txStatus,
         upPreview,
         downPreview,
+        walletBalance,
     ]);
 }

@@ -2945,6 +2945,7 @@
     .stake-input-row .max-button{min-height:28px!important;height:28px!important;padding:0 10px!important;border-color:var(--line)!important;background:transparent!important;color:var(--ink)!important}
     .stake-sub,.payout-line{font-size:12px;line-height:1.35;letter-spacing:-.01em;color:var(--muted)}
     .payout-line strong{color:var(--ink);font-weight:500}.payout-line span{font-family:var(--font-mono);font-size:10px;letter-spacing:.05em}.muted-line{font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+    .wallet-balance-line{margin:4px 0 0;font-family:var(--font-mono);font-size:11px;letter-spacing:.04em;color:var(--muted);text-align:left}
     .arena-cta,.trade-view .cta-full{
       height:54px!important;
       border-radius:0!important;

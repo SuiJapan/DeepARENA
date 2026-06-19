@@ -1008,11 +1008,15 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                 setActivePosition({ direction: "RANGE", cost, entryOdds });
                 return;
             }
+            const binaryStrike = roundMarket?.round?.binaryStrikeRaw
+                ? BigInt(roundMarket.round.binaryStrikeRaw)
+                : null;
             const breakForRound = (data.minted ?? []).filter(
                 (e) =>
                     e.oracleId === baseMarket.oracleId &&
                     e.expiryMs === baseMarket.expiryMs &&
-                    BigInt(e.strike) !== baseMarket.referenceStrike,
+                    BigInt(e.strike) !== baseMarket.referenceStrike &&
+                    (binaryStrike === null || BigInt(e.strike) !== binaryStrike),
             );
             if (breakForRound.length > 0) {
                 const cost = breakForRound.reduce((sum, e) => sum + BigInt(e.cost), 0n);
@@ -1023,7 +1027,7 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
         } catch {
             // best-effort: エラー時は更新しない
         }
-    }, [address, baseMarket]);
+    }, [address, baseMarket, roundMarket?.round?.binaryStrikeRaw]);
 
     useEffect(() => {
         void fetchActivePosition();
@@ -1787,6 +1791,14 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
             ? `${formatTokenAmount(activePosition.cost, PREDICT_BINARY_CONFIG.quoteDecimals)} DUSDC`
             : null,
         activePositionEntryOdds: activePosition?.entryOdds ?? null,
+        walletBalanceLabel:
+            walletBalance > 0n
+                ? formatTokenAmount(walletBalance, PREDICT_BINARY_CONFIG.quoteDecimals)
+                : null,
+        activeBetSummary:
+            activePosition && activePosition.cost > 0n
+                ? `${activePosition.direction} ${formatTokenAmount(activePosition.cost, PREDICT_BINARY_CONFIG.quoteDecimals)}`
+                : null,
         unavailableReason: previewState.error,
         disabledReason,
         displayDebug: {

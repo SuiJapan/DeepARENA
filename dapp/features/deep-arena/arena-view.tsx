@@ -142,7 +142,9 @@ function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null })
             </div>
 
             <div className="stake-card">
-                <label htmlFor="range-stake">Your BET</label>
+                <label htmlFor="range-stake">
+                    Your BET{range.activeBetSummary ? `: ${range.activeBetSummary}` : ""}
+                </label>
                 <div className="stake-input-row">
                     <input
                         id="range-stake"
@@ -156,6 +158,11 @@ function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null })
                     />
                     <span>DUSDC</span>
                 </div>
+                {range.walletBalanceLabel !== null && (
+                    <p className="wallet-balance-line muted-line">
+                        Balance: {range.walletBalanceLabel} DUSDC
+                    </p>
+                )}
                 <button
                     className="primary-button cta-full arena-cta"
                     type="button"
@@ -164,15 +171,6 @@ function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null })
                 >
                     {actionLabel}
                 </button>
-                <p className="payout-line muted-line" aria-live="polite">
-                    {range.activePositionDirection && range.activePositionCostLabel
-                        ? `Your bet ${range.activePositionDirection} · ${range.activePositionCostLabel}`
-                        : range.txStatus === "FAILED"
-                          ? range.message
-                          : range.direction === "BREAK"
-                            ? (range.breakPayoutLabel ?? range.unavailableReason ?? "")
-                            : (range.expectedPayout ?? range.unavailableReason ?? "")}
-                </p>
             </div>
         </div>
     );
