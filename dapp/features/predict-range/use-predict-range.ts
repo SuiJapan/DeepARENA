@@ -988,7 +988,13 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
             });
             if (!response.ok) return;
             const data = (await response.json()) as {
-                minted: Array<{ oracleId: string; expiryMs: number; strike: string; cost: string }>;
+                minted: Array<{
+                    oracleId: string;
+                    expiryMs: number;
+                    strike: string;
+                    cost: string;
+                    digest: string | null;
+                }>;
                 rangeMinted: Array<{
                     oracleId: string;
                     expiryMs: number;
@@ -1008,18 +1014,25 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
                 setActivePosition({ direction: "RANGE", cost, entryOdds });
                 return;
             }
-            const binaryStrike = roundMarket?.round?.binaryStrikeRaw
-                ? BigInt(roundMarket.round.binaryStrikeRaw)
-                : null;
-            const breakForRound = (data.minted ?? []).filter(
-                (e) =>
-                    e.oracleId === baseMarket.oracleId &&
-                    e.expiryMs === baseMarket.expiryMs &&
-                    BigInt(e.strike) !== baseMarket.referenceStrike &&
-                    (binaryStrike === null || BigInt(e.strike) !== binaryStrike),
+            const mintedForRound = (data.minted ?? []).filter(
+                (e) => e.oracleId === baseMarket.oracleId && e.expiryMs === baseMarket.expiryMs,
             );
-            if (breakForRound.length > 0) {
-                const cost = breakForRound.reduce((sum, e) => sum + BigInt(e.cost), 0n);
+            const byDigest = new Map<string, typeof mintedForRound>();
+            for (const e of mintedForRound) {
+                if (!e.digest) continue;
+                const group = byDigest.get(e.digest) ?? [];
+                group.push(e);
+                byDigest.set(e.digest, group);
+            }
+            const breakLegs = [...byDigest.values()]
+                .filter((group) => {
+                    if (group.length < 2) return false;
+                    const strikes = new Set(group.map((e) => e.strike));
+                    return strikes.size >= 2;
+                })
+                .flat();
+            if (breakLegs.length > 0) {
+                const cost = breakLegs.reduce((sum, e) => sum + BigInt(e.cost), 0n);
                 setActivePosition({ direction: "BREAK", cost, entryOdds: null });
                 return;
             }
@@ -1027,7 +1040,7 @@ export function usePredictRange(roundMarket: PredictRoundMarket | null) {
         } catch {
             // best-effort: エラー時は更新しない
         }
-    }, [address, baseMarket, roundMarket?.round?.binaryStrikeRaw]);
+    }, [address, baseMarket]);
 
     useEffect(() => {
         void fetchActivePosition();
