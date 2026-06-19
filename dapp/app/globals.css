@@ -407,8 +407,10 @@
       white-space:nowrap;
     }
     .timer-big{color:var(--violet)}
+    .timer-big.timer-locked{color:#777}
     .cell-foot{display:flex;align-items:center;justify-content:space-between;gap:14px;color:var(--muted);font-size:13px;letter-spacing:-.02em}
-    .live-dot{width:9px;height:9px;border-radius:50%;background:var(--violet);box-shadow:0 0 0 8px var(--violet-soft);display:inline-block;flex:0 0 auto}
+    .live-dot{width:9px;height:9px;border-radius:50%;background:var(--violet);box-shadow:0 0 0 8px var(--violet-soft);display:inline-block;flex:0 0 auto;margin-left:1em;vertical-align:middle}
+    .live-dot.live-dot-locked{background:#999;box-shadow:none}
     .delta{color:var(--green);font-family:var(--font-mono);font-size:11px;letter-spacing:.08em}
 
     .market-layout{
@@ -2945,6 +2947,7 @@
     .stake-input-row .max-button{min-height:28px!important;height:28px!important;padding:0 10px!important;border-color:var(--line)!important;background:transparent!important;color:var(--ink)!important}
     .stake-sub,.payout-line{font-size:12px;line-height:1.35;letter-spacing:-.01em;color:var(--muted)}
     .payout-line strong{color:var(--ink);font-weight:500}.payout-line span{font-family:var(--font-mono);font-size:10px;letter-spacing:.05em}.muted-line{font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+    .wallet-balance-line{margin:4px 0 0;font-family:var(--font-mono);font-size:11px;letter-spacing:.04em;color:var(--muted);text-align:left}
     .arena-cta,.trade-view .cta-full{
       height:54px!important;
       border-radius:0!important;

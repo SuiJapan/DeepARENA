@@ -142,7 +142,9 @@ function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null })
             </div>
 
             <div className="stake-card">
-                <label htmlFor="range-stake">Your BET</label>
+                <label htmlFor="range-stake">
+                    Your BET{range.activeBetSummary ? `: ${range.activeBetSummary}` : ""}
+                </label>
                 <div className="stake-input-row">
                     <input
                         id="range-stake"
@@ -156,6 +158,11 @@ function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null })
                     />
                     <span>DUSDC</span>
                 </div>
+                {range.walletBalanceLabel !== null && (
+                    <p className="wallet-balance-line muted-line">
+                        Balance: {range.walletBalanceLabel} DUSDC
+                    </p>
+                )}
                 <button
                     className="primary-button cta-full arena-cta"
                     type="button"
@@ -164,15 +171,12 @@ function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null })
                 >
                     {actionLabel}
                 </button>
-                <p className="payout-line muted-line" aria-live="polite">
-                    {range.activePositionDirection && range.activePositionCostLabel
-                        ? `Your bet ${range.activePositionDirection} · ${range.activePositionCostLabel}`
-                        : range.txStatus === "FAILED"
-                          ? range.message
-                          : range.direction === "BREAK"
-                            ? (range.breakPayoutLabel ?? range.unavailableReason ?? "")
-                            : (range.expectedPayout ?? range.unavailableReason ?? "")}
-                </p>
+
+                {range.txStatus === "FAILED" && range.message && (
+                    <p className="payout-line muted-line" aria-live="polite">
+                        {range.message}
+                    </p>
+                )}
             </div>
         </div>
     );
@@ -209,18 +213,23 @@ export function ArenaView({
                         <div className="live-cell">
                             <div className="cell-label">Market Pair</div>
                             <div className="pair-title">{marketConfig.displaySymbol}</div>
-                            <div className="cell-foot">
-                                <span className="live-dot" />
-                            </div>
+                            <div className="cell-foot" />
                         </div>
                         <div className="live-cell">
                             <div className="cell-label">Settles In</div>
-                            <div className="timer-big">
+                            <div
+                                className={`timer-big${predictRound.market?.state === "FINAL_LIVE" ? " timer-locked" : ""}`}
+                            >
                                 {predictRound.countdownLabel ?? "--:--"}
                             </div>
                             <div className="cell-foot">
                                 <span>{formatCloseLabel(currentOracle?.expiryMs ?? null)}</span>
-                                <span>{formatRoundStateLabel(predictRound.market?.state)}</span>
+                                <span>
+                                    {formatRoundStateLabel(predictRound.market?.state)}
+                                    <span
+                                        className={`live-dot${predictRound.market?.state === "FINAL_LIVE" ? " live-dot-locked" : ""}`}
+                                    />
+                                </span>
                             </div>
                         </div>
                         <div className="live-cell">
@@ -278,8 +287,8 @@ export function ArenaView({
                                 </div>
                                 <div className="badge-row">
                                     <span className="badge active">
-                                        <span className="live-dot" />
                                         Oracle Live
+                                        <span className="live-dot" />
                                     </span>
                                 </div>
                             </div>

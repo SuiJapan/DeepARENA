@@ -83,7 +83,9 @@ export function PredictBinaryCard({
             </div>
 
             <div className="stake-card">
-                <label htmlFor="binary-stake">Your BET</label>
+                <label htmlFor="binary-stake">
+                    Your BET{binary.activeBetSummary ? `: ${binary.activeBetSummary}` : ""}
+                </label>
                 <div className="stake-input-row">
                     <input
                         id="binary-stake"
@@ -97,6 +99,11 @@ export function PredictBinaryCard({
                     />
                     <span>DUSDC</span>
                 </div>
+                {binary.walletBalanceLabel !== null && (
+                    <p className="wallet-balance-line muted-line">
+                        Balance: {binary.walletBalanceLabel} DUSDC
+                    </p>
+                )}
 
                 <button
                     className="primary-button cta-full arena-cta"
@@ -107,29 +114,27 @@ export function PredictBinaryCard({
                     {actionLabel}
                 </button>
 
-                <p className="payout-line muted-line" aria-live="polite">
-                    {binary.lastRedeem
-                        ? binary.payoutLabel
-                            ? `Payout ${binary.payoutLabel}`
-                            : binary.lastRedeem.payout > 0n
-                              ? "You won"
-                              : "Round lost"
-                        : binary.position && binary.position.cost > 0n
-                          ? `Your pick ${binary.position.direction}${binary.entryCostLabel ? ` · ${binary.entryCostLabel}` : ""}${binary.entryOddsLabel ? ` · ${binary.entryOddsLabel}` : ""}`
-                          : binary.txStatus === "FAILED"
-                            ? binary.message
-                            : direction && !canEnter && binary.oddsUnavailableLabel
-                              ? binary.oddsUnavailableLabel
+                {(binary.lastRedeem || binary.txStatus === "FAILED" || binary.explorerUrl) && (
+                    <p className="payout-line muted-line" aria-live="polite">
+                        {binary.lastRedeem
+                            ? binary.payoutLabel
+                                ? `Payout ${binary.payoutLabel}`
+                                : binary.lastRedeem.payout > 0n
+                                  ? "You won"
+                                  : "Round lost"
+                            : binary.txStatus === "FAILED"
+                              ? binary.message
                               : ""}
-                    {binary.explorerUrl ? (
-                        <>
-                            {" "}
-                            <a href={binary.explorerUrl} target="_blank" rel="noreferrer">
-                                View transaction
-                            </a>
-                        </>
-                    ) : null}
-                </p>
+                        {binary.explorerUrl ? (
+                            <>
+                                {" "}
+                                <a href={binary.explorerUrl} target="_blank" rel="noreferrer">
+                                    View transaction
+                                </a>
+                            </>
+                        ) : null}
+                    </p>
+                )}
             </div>
         </div>
     );
