@@ -407,8 +407,10 @@
       white-space:nowrap;
     }
     .timer-big{color:var(--violet)}
+    .timer-big.timer-locked{color:#777}
     .cell-foot{display:flex;align-items:center;justify-content:space-between;gap:14px;color:var(--muted);font-size:13px;letter-spacing:-.02em}
-    .live-dot{width:9px;height:9px;border-radius:50%;background:var(--violet);box-shadow:0 0 0 8px var(--violet-soft);display:inline-block;flex:0 0 auto}
+    .live-dot{width:9px;height:9px;border-radius:50%;background:var(--violet);box-shadow:0 0 0 8px var(--violet-soft);display:inline-block;flex:0 0 auto;margin-left:1em;vertical-align:middle}
+    .live-dot.live-dot-locked{background:#999;box-shadow:none}
     .delta{color:var(--green);font-family:var(--font-mono);font-size:11px;letter-spacing:.08em}
 
     .market-layout{

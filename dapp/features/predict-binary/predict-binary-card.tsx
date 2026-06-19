@@ -113,6 +113,28 @@ export function PredictBinaryCard({
                 >
                     {actionLabel}
                 </button>
+
+                {(binary.lastRedeem || binary.txStatus === "FAILED" || binary.explorerUrl) && (
+                    <p className="payout-line muted-line" aria-live="polite">
+                        {binary.lastRedeem
+                            ? binary.payoutLabel
+                                ? `Payout ${binary.payoutLabel}`
+                                : binary.lastRedeem.payout > 0n
+                                  ? "You won"
+                                  : "Round lost"
+                            : binary.txStatus === "FAILED"
+                              ? binary.message
+                              : ""}
+                        {binary.explorerUrl ? (
+                            <>
+                                {" "}
+                                <a href={binary.explorerUrl} target="_blank" rel="noreferrer">
+                                    View transaction
+                                </a>
+                            </>
+                        ) : null}
+                    </p>
+                )}
             </div>
         </div>
     );
