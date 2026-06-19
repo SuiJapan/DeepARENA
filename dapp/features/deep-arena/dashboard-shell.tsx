@@ -95,9 +95,9 @@ export function DashboardShell({
 
                 <footer className="site-footer">
                     <div className="footer-title">
-                        Built for
+                        BACK YOUR
                         <br />
-                        SUI Markets
+                        MARKET CALL
                     </div>
                     <div className="footer-meta">
                         DeepARENA © 2026
