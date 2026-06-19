@@ -113,7 +113,6 @@ export function PredictBinaryCard({
                 >
                     {actionLabel}
                 </button>
-
             </div>
         </div>
     );
