@@ -79,10 +79,10 @@ export function MarketChart({
 
     return (
         <section className={`surface market-chart${embedded ? " market-chart-embed" : ""}`}>
-            <div className="section-title">
+            <div className="section-title market-chart-title">
                 <div>
                     <span>Market view</span>
-                    <h2>{marketConfig.displaySymbol}</h2>
+                    <h2 className="market-chart-symbol">{marketConfig.displaySymbol}</h2>
                     <small>{marketConfig.sourceLabel}</small>
                 </div>
                 <div className="market-quote" data-direction={changeDirection}>

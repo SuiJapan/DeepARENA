@@ -129,7 +129,7 @@ export function RankingSection() {
             <section className="data-card ranking-board">
                 <div className="data-head">
                     <div>
-                        <h2 className="mini-title">Top Earners</h2>
+                        <h2 className="mini-title section-card-title">Top Earners</h2>
                         <p className="mini-desc">
                             {currentPlayer ? (
                                 <>

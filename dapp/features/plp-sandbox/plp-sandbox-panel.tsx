@@ -31,7 +31,7 @@ export function PlpSandboxPanel() {
             <div className="mode-topper trade-topper">
                 <div>
                     <p className="mode-eyebrow">Active mode</p>
-                    <h2 className="mode-title">Predict PLP</h2>
+                    <h2 className="mode-title trade-mode-title">Predict PLP</h2>
                     <p className="mode-copy">Supply your prediction. Earn from accuracy.</p>
                 </div>
             </div>
@@ -53,14 +53,14 @@ export function PlpSandboxPanel() {
                     type="button"
                     onClick={() => setMode("supply")}
                 >
-                    <strong>Supply</strong>
+                    <strong className="choice-label">Supply</strong>
                 </button>
                 <button
                     className={`choice-button${!isSupplyMode ? " selected" : ""}`}
                     type="button"
                     onClick={() => setMode("withdraw")}
                 >
-                    <strong>Withdraw</strong>
+                    <strong className="choice-label">Withdraw</strong>
                 </button>
             </div>
 
@@ -86,7 +86,7 @@ export function PlpSandboxPanel() {
                     </button>
                 </div>
                 <button
-                    className="primary-button cta-full arena-cta"
+                    className="primary-button cta-full arena-cta action-cta"
                     type="button"
                     disabled={isActionDisabled}
                     onClick={() => void (isSupplyMode ? plp.supply(amount) : plp.withdraw(amount))}

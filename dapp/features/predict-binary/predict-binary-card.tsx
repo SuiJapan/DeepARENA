@@ -40,7 +40,7 @@ export function PredictBinaryCard({
             <div className="mode-topper trade-topper">
                 <div>
                     <p className="mode-eyebrow">Active mode</p>
-                    <h2 className="mode-title">Binary Duel</h2>
+                    <h2 className="mode-title trade-mode-title">Binary Duel</h2>
                     <p className="mode-copy">Above or below the strike when the bell tolls?</p>
                 </div>
                 <span className="fee-pill">{binary.feeBpsLabel}</span>
@@ -55,14 +55,14 @@ export function PredictBinaryCard({
                     onClick={() => setDirection(direction === "UP" ? null : "UP")}
                 >
                     <span className="duel-sigil blade-sigil blade-sigil-up" aria-hidden="true" />
-                    <span className="duel-name">UP</span>
+                    <span className="duel-name choice-label">UP</span>
                     <span
                         className={`duel-odds${isCompactOddsLabel(binary.upOdds) ? " duel-odds-status" : ""}`}
                     >
                         {binary.upOdds}
                     </span>
                 </button>
-                <div className="duel-vs" aria-hidden="true">
+                <div className="duel-vs choice-vs" aria-hidden="true">
                     VS
                 </div>
                 <button
@@ -73,7 +73,7 @@ export function PredictBinaryCard({
                     onClick={() => setDirection(direction === "DOWN" ? null : "DOWN")}
                 >
                     <span className="duel-sigil blade-sigil blade-sigil-down" aria-hidden="true" />
-                    <span className="duel-name">DOWN</span>
+                    <span className="duel-name choice-label">DOWN</span>
                     <span
                         className={`duel-odds${isCompactOddsLabel(binary.downOdds) ? " duel-odds-status" : ""}`}
                     >
@@ -106,7 +106,7 @@ export function PredictBinaryCard({
                 )}
 
                 <button
-                    className="primary-button cta-full arena-cta"
+                    className="primary-button cta-full arena-cta action-cta"
                     type="button"
                     disabled={!canEnter}
                     onClick={() => direction && void binary.placeBet(direction)}

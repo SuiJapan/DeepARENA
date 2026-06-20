@@ -9,7 +9,7 @@ export function RankingView() {
                 <div className="container">
                     <div className="section-head">
                         <div className="section-no">Live standings</div>
-                        <h1 className="section-title">Leaderboard</h1>
+                        <h1 className="section-title page-title">Leaderboard</h1>
                     </div>
                     <RankingSection />
                 </div>

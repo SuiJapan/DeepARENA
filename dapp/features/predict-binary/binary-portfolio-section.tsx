@@ -1338,7 +1338,7 @@ export function BinaryPortfolioSection({
                 <div className="data-head">
                     <div>
                         <span>BTC Binary</span>
-                        <h2>Current Positions</h2>
+                        <h2 className="section-card-title">Current Positions</h2>
                         <p className="mini-desc">{currentDisplayPositions.length} open positions</p>
                     </div>
                     <button
@@ -1415,7 +1415,7 @@ export function BinaryPortfolioSection({
                 <div className="data-head">
                     <div>
                         <span>BTC Binary</span>
-                        <h2>Your history</h2>
+                        <h2 className="section-card-title">Your history</h2>
                         <p className="mini-desc">
                             {history.length} records · Page {safeHistoryPage} / {historyPageCount}
                         </p>
