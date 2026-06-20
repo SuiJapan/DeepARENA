@@ -1,5 +1,6 @@
 import type { DeepArenaClient } from "./client";
 import { type DeepArenaConfig, deepArenaMockConfig } from "./config";
+import { readDynamicFieldNameAddress } from "./dynamic-field.ts";
 import { createMockDeepArenaClient } from "./mock-client";
 import type {
     ActionPreview,
@@ -215,7 +216,10 @@ export class ContractDeepArenaClient implements DeepArenaClient {
                 if (!objFields) continue;
                 try {
                     // Dynamic field: { name: address, value: PlayerStats }
-                    const playerAddress = readString(objFields.name, "player.address");
+                    const playerAddress = readDynamicFieldNameAddress(
+                        objFields.name,
+                        "player.address",
+                    );
                     const statsRaw = objFields.value;
                     const stats = isRecord(statsRaw) ? readFields(statsRaw, "player.stats") : null;
                     if (!stats) continue;

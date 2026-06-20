@@ -57,6 +57,7 @@ function isArenaAlreadyJoinedError(error: unknown): boolean {
 export type BinaryDirection = "UP" | "DOWN";
 export type BinaryTxStatus =
     | "READY"
+    | "PREPARING"
     | "CONFIRM IN WALLET"
     | "SUBMITTING"
     | "BET PLACED"
@@ -432,6 +433,19 @@ async function previewBinaryOddsViaApi({
 
 const PREVIEW_DEBOUNCE_MS = 750;
 const PREVIEW_POLL_INTERVAL_MS = 5_000;
+const BET_PREVIEW_TIMEOUT_MS = 15_000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+    });
+    return Promise.race([promise, timeout]).finally(() => {
+        if (timeoutId !== null) {
+            clearTimeout(timeoutId);
+        }
+    });
+}
 
 function createMarketFromRound(roundMarket: PredictRoundMarket | null): BtcBinaryMarket | null {
     if (!roundMarket?.currentOracle || !roundMarket.round) {
@@ -457,6 +471,7 @@ export function usePredictBinary(
     const sidePositionRestoreRef = useRef(0);
     const loggedPreviewErrorsRef = useRef<Set<string>>(new Set());
     const previewKeyRef = useRef<string | null>(null);
+    const placeBetInFlightRef = useRef(false);
     const previewContextRef = useRef<{
         oracleTimestampMs: number | null;
         spotTimestampMs: number | null;
@@ -519,7 +534,8 @@ export function usePredictBinary(
         void findPredictManager(address).then(setManagerId);
     }, [address, isTestnet]);
 
-    const isBusy = txStatus === "CONFIRM IN WALLET" || txStatus === "SUBMITTING";
+    const isBusy =
+        txStatus === "PREPARING" || txStatus === "CONFIRM IN WALLET" || txStatus === "SUBMITTING";
     const isBettingOpen = roundMarket?.state === "BETTING_OPEN";
     const oracleTimestampMs = roundMarket?.currentOracle?.timestampMs ?? null;
 
@@ -956,17 +972,27 @@ export function usePredictBinary(
                 setMessage("Insufficient DUSDC balance");
                 return;
             }
+            if (placeBetInFlightRef.current) {
+                return;
+            }
+            placeBetInFlightRef.current = true;
+            setTxStatus("PREPARING");
+            setMessage("Preparing transaction");
 
             try {
                 let freshPreviewResult: Awaited<ReturnType<typeof previewBinaryOddsViaApi>>;
                 try {
-                    freshPreviewResult = await previewBinaryOddsViaApi({
-                        address,
-                        market: lockedMarket,
-                        budget,
-                        oracleTimestampMs,
-                        cachePolicy: "bypass",
-                    });
+                    freshPreviewResult = await withTimeout(
+                        previewBinaryOddsViaApi({
+                            address,
+                            market: lockedMarket,
+                            budget,
+                            oracleTimestampMs,
+                            cachePolicy: "bypass",
+                        }),
+                        BET_PREVIEW_TIMEOUT_MS,
+                        "Binary preview timed out",
+                    );
                 } catch (caught) {
                     const error = readErrorMessage(caught);
                     if (direction === "UP") {
@@ -1360,6 +1386,8 @@ export function usePredictBinary(
                         ? `BET FAILED: ${caught.message}`
                         : readErrorMessage(caught),
                 );
+            } finally {
+                placeBetInFlightRef.current = false;
             }
         },
         [

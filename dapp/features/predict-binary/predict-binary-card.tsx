@@ -9,6 +9,12 @@ function isCompactOddsLabel(value: string): boolean {
     return !/\d/.test(normalized);
 }
 
+function formatBusyActionLabel(txStatus: string): string {
+    if (txStatus === "CONFIRM IN WALLET") return "Confirm in wallet";
+    if (txStatus === "SUBMITTING") return "Submitting...";
+    return "Preparing...";
+}
+
 export function PredictBinaryCard({
     roundMarket,
     spotTimestampMs,
@@ -25,15 +31,17 @@ export function PredictBinaryCard({
     const isRoundLocked = roundMarket?.state === "FINAL_LIVE";
     const isRoundCalculating = roundMarket?.state === "LOCKING_ROUND";
     const choiceDisabled = binary.isBusy || !isBettingOpen;
-    const actionLabel = isBettingOpen
-        ? direction
-            ? `Enter ${direction}`
-            : "Select Direction"
-        : isRoundCalculating
-          ? "Calculating..."
-          : isRoundLocked
-            ? "Round Locked"
-            : "Betting Closed";
+    const actionLabel = binary.isBusy
+        ? formatBusyActionLabel(binary.txStatus)
+        : isBettingOpen
+          ? direction
+              ? `Enter ${direction}`
+              : "Select Direction"
+          : isRoundCalculating
+            ? "Calculating..."
+            : isRoundLocked
+              ? "Round Locked"
+              : "Betting Closed";
 
     return (
         <div className="panel-view active trade-view" data-panel="binary">
@@ -106,25 +114,34 @@ export function PredictBinaryCard({
                 )}
 
                 <button
-                    className="primary-button cta-full arena-cta"
+                    className={`primary-button cta-full arena-cta${binary.isBusy ? " is-loading" : ""}`}
                     type="button"
-                    disabled={!canEnter}
+                    disabled={!canEnter || binary.isBusy}
+                    aria-busy={binary.isBusy}
                     onClick={() => direction && void binary.placeBet(direction)}
                 >
-                    {actionLabel}
+                    {binary.isBusy ? (
+                        <span className="arena-cta-spinner" aria-hidden="true" />
+                    ) : null}
+                    <span className="arena-cta-label">{actionLabel}</span>
                 </button>
 
-                {(binary.lastRedeem || binary.txStatus === "FAILED" || binary.explorerUrl) && (
+                {(binary.isBusy ||
+                    binary.lastRedeem ||
+                    binary.txStatus === "FAILED" ||
+                    binary.explorerUrl) && (
                     <p className="payout-line muted-line" aria-live="polite">
-                        {binary.lastRedeem
-                            ? binary.payoutLabel
-                                ? `Payout ${binary.payoutLabel}`
-                                : binary.lastRedeem.payout > 0n
-                                  ? "You won"
-                                  : "Round lost"
-                            : binary.txStatus === "FAILED"
-                              ? binary.message
-                              : ""}
+                        {binary.isBusy
+                            ? binary.message
+                            : binary.lastRedeem
+                              ? binary.payoutLabel
+                                  ? `Payout ${binary.payoutLabel}`
+                                  : binary.lastRedeem.payout > 0n
+                                    ? "You won"
+                                    : "Round lost"
+                              : binary.txStatus === "FAILED"
+                                ? binary.message
+                                : ""}
                         {binary.explorerUrl ? (
                             <>
                                 {" "}

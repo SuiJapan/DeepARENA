@@ -4431,6 +4431,37 @@
       animation:none!important;
     }
 
+    .arena-cta.is-loading,
+    #market .arena-cta.is-loading{
+      display:inline-flex!important;
+      align-items:center!important;
+      justify-content:center!important;
+      gap:10px!important;
+      cursor:wait!important;
+      opacity:.9!important;
+    }
+
+    .arena-cta-spinner{
+      width:14px!important;
+      height:14px!important;
+      flex:0 0 auto!important;
+      border:2px solid color-mix(in srgb,var(--reverse) 34%,transparent)!important;
+      border-top-color:var(--reverse)!important;
+      border-radius:999px!important;
+      animation:arenaCtaSpin .72s linear infinite!important;
+    }
+
+    .arena-cta-label{
+      min-width:0!important;
+      overflow:hidden!important;
+      text-overflow:ellipsis!important;
+      white-space:nowrap!important;
+    }
+
+    @keyframes arenaCtaSpin{
+      to{transform:rotate(360deg)}
+    }
+
     #market .plp-switch{
       display:grid!important;
       grid-template-columns:1fr 1fr!important;
