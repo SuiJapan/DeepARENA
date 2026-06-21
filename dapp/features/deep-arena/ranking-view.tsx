@@ -8,8 +8,9 @@ export function RankingView() {
             <div className="section-block">
                 <div className="container">
                     <div className="section-head">
-                        <div className="section-no">Live standings</div>
-                        <h1 className="section-title">Leaderboard</h1>
+                        <h1 className="section-title" style={{ fontWeight: 700 }}>
+                            Leaderboard
+                        </h1>
                     </div>
                     <RankingSection />
                 </div>

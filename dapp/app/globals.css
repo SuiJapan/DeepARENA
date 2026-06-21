@@ -4710,6 +4710,25 @@ body[data-theme="dark"]{color-scheme:dark;}
 .chart-panel .market-chart-embed svg{min-height:clamp(280px,36vw,420px)!important;}
 
 /* DeepARENA React integration corrections */
+.brand-logo{
+  display:block!important;
+  width:156px!important;
+  height:36px!important;
+  line-height:0!important;
+  overflow:hidden!important;
+  background-image:url("/design/deep-arena-logo-white.svg")!important;
+  background-repeat:no-repeat!important;
+  background-position:left center!important;
+  background-size:contain!important;
+}
+body[data-theme="dark"] .brand-logo{background-image:url("/design/deep-arena-logo-black.svg")!important;}
+@media (max-width:1120px){
+  .brand-logo{width:138px!important;height:32px!important;}
+}
+@media (max-width:390px){
+  .brand-logo{width:126px!important;height:29px!important;}
+}
+
 .nav-tabs .nav-tab{
   display:inline-flex!important;
   align-items:center!important;
@@ -5133,6 +5152,31 @@ body[data-theme="dark"]{color-scheme:dark;}
   color:var(--muted)!important;
   font-size:13px!important;
   line-height:1.45!important;
+}
+
+#portfolio .section-head{
+  width:min(100%,980px)!important;
+  max-width:980px!important;
+  margin-inline:auto!important;
+  grid-template-columns:1fr!important;
+  justify-items:end!important;
+}
+
+#leaderboard .section-head{
+  width:min(100%,860px)!important;
+  max-width:860px!important;
+  margin-inline:auto!important;
+  grid-template-columns:1fr!important;
+  justify-items:end!important;
+}
+
+#portfolio .section-title,
+#leaderboard .section-title{
+  width:100%!important;
+  max-width:100%!important;
+  text-align:right!important;
+  white-space:normal!important;
+  overflow-wrap:anywhere!important;
 }
 
 @media (max-width:720px){
