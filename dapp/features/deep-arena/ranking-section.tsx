@@ -129,16 +129,16 @@ export function RankingSection() {
             <section className="data-card ranking-board">
                 <div className="data-head">
                     <div>
-                        <h2 className="mini-title">Top Earners</h2>
+                        <h2 className="mini-title">Top Bettors</h2>
                         <p className="mini-desc">
                             {currentPlayer ? (
                                 <>
-                                    Your Winnings: {formatAmount(currentPlayer.score)}
+                                    Your Total Bet: {formatAmount(currentPlayer.score)}
                                     <br />
                                     Your Rank: {currentPlayer.rank}
                                 </>
                             ) : (
-                                "Arena season winnings"
+                                "Arena season total bets"
                             )}
                         </p>
                     </div>
@@ -184,8 +184,7 @@ export function RankingSection() {
                                                 ) : null}
                                             </div>
                                             <span className="wallet">
-                                                Total Bet {formatAmount(player.deposited)} · Manager{" "}
-                                                {shortId(player.predictManagerId)}
+                                                Manager {shortId(player.predictManagerId)}
                                             </span>
                                         </div>
                                         <div className="score-value">
