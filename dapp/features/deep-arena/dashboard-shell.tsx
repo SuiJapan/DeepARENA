@@ -34,11 +34,7 @@ export function DashboardShell({
             <div className="app-shell">
                 <header className="topbar">
                     <Link className="brand" href="/" aria-label="Deep Arena home">
-                        <span className="brand-word">
-                            <span>DEEP</span>
-                            <strong>ARENA</strong>
-                        </span>
-                        <span className="brand-under" aria-hidden="true" />
+                        <span className="brand-logo" aria-hidden="true" />
                     </Link>
                     <nav className="nav-tabs" aria-label="Primary navigation">
                         {NAV_ITEMS.map((item) => (

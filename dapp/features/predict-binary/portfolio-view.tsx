@@ -9,8 +9,9 @@ export function PortfolioView({ roundMarket }: { roundMarket: PredictRoundMarket
             <div className="section-block">
                 <div className="container">
                     <div className="section-head">
-                        <div className="section-no">Personal account</div>
-                        <h1 className="section-title">Portfolio</h1>
+                        <h1 className="section-title" style={{ fontWeight: 700 }}>
+                            Portfolio
+                        </h1>
                     </div>
                     <BinaryPortfolioSection roundMarket={roundMarket} />
                 </div>
