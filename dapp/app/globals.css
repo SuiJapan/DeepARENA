@@ -4160,7 +4160,7 @@
       gap:8px!important;
     }
     #market .range-band-card span{font-size:10px!important;line-height:1!important;letter-spacing:.12em!important;color:var(--muted)!important}
-    #market .range-band-card strong{font-family:var(--font-sans)!important;font-size:clamp(22px,2.1vw,31px)!important;line-height:1.05!important;letter-spacing:-.045em!important;font-weight:800!important;color:var(--ink)!important}
+    #market .range-band-card strong{font-family:var(--font-sans)!important;font-size:clamp(22px,2.15vw,30px)!important;line-height:1!important;letter-spacing:-.04em!important;font-weight:500!important;color:var(--ink)!important}
     #market .duel-board,
     #market .binary-board,
     #market .range-board{
@@ -4227,9 +4227,9 @@
     #market .range-board .duel-choice .duel-odds,
     #market .binary-board .duel-choice .duel-odds{
       font-family:var(--font-sans)!important;
-      font-size:clamp(31px,2.85vw,48px)!important;
+      font-size:clamp(22px,2.15vw,30px)!important;
       line-height:1!important;
-      letter-spacing:-.052em!important;
+      letter-spacing:-.04em!important;
       font-weight:500!important;
       color:currentColor!important;
       margin:0!important;
@@ -4930,7 +4930,7 @@ body[data-theme="dark"]{color-scheme:dark;}
 
 #portfolio .player-name{
   font-family:var(--font-sans)!important;
-  font-size:clamp(22px,2vw,34px)!important;
+  font-size:clamp(19px,1.7vw,28px)!important;
   line-height:1!important;
   letter-spacing:-.055em!important;
   font-weight:700!important;
@@ -4977,6 +4977,12 @@ body[data-theme="dark"]{color-scheme:dark;}
   font-weight:800!important;
   color:var(--ink)!important;
   text-align:right!important;
+}
+
+/* Keep the wallet string size locked to the score size */
+#portfolio .player-name,
+#portfolio .score-value{
+  font-size:clamp(19px,1.7vw,28px)!important;
 }
 
 #portfolio .portfolio-badges{
@@ -5397,4 +5403,37 @@ body[data-theme="dark"]{color-scheme:dark;}
 #leaderboard .score-value{
   font-weight:600!important;
   letter-spacing:-.015em!important;
+}
+
+/* Market view typography lock for Binary / Range only */
+#market .binary-board .duel-choice .duel-name,
+#market .binary-board .duel-choice.choice-button .duel-name,
+#market .range-board .duel-choice .duel-name,
+#market .range-board .duel-choice.choice-button .duel-name{
+  font-family:var(--font-sans)!important;
+  font-size:clamp(22px,2.15vw,30px)!important;
+  line-height:1!important;
+  letter-spacing:-.04em!important;
+  font-weight:500!important;
+  text-transform:uppercase!important;
+}
+
+#market .binary-board .duel-choice .duel-odds,
+#market .binary-board .duel-choice.choice-button .duel-odds,
+#market .range-board .duel-choice .duel-odds,
+#market .range-board .duel-choice.choice-button .duel-odds{
+  font-family:var(--font-sans)!important;
+  font-size:clamp(22px,2.15vw,30px)!important;
+  line-height:1!important;
+  letter-spacing:-.04em!important;
+  font-weight:500!important;
+  text-transform:uppercase!important;
+}
+
+#market .range-band-card strong{
+  font-family:var(--font-sans)!important;
+  font-size:clamp(22px,2.15vw,30px)!important;
+  line-height:1!important;
+  letter-spacing:-.04em!important;
+  font-weight:500!important;
 }
