@@ -1,4 +1,3 @@
-import { getRedeemPayoutByManager } from "@/lib/server/redeem-payout-index";
 import type { DeepArenaClient } from "./client";
 import { type DeepArenaConfig, deepArenaMockConfig } from "./config";
 import { readDynamicFieldNameAddress } from "./dynamic-field.ts";
@@ -185,14 +184,13 @@ export class ContractDeepArenaClient implements DeepArenaClient {
     }
 
     async listPlayers(): Promise<PlayerSummary[]> {
-        // 獲得額ランキングのため、各プレイヤーの PlayerStats をテーブルから読む。
-        // 獲得額は redeem イベント集計（差分キャッシュ）から得る。オンチェーン
-        // cumulative_payout は bet::claim_* 経由分しか加算されず、predict 直接 redeem や
-        // キーパー代行 redeem を取りこぼすため、この指標では使用しない。
+        // ランキング指標は Total Bet（cumulative_cost）。BET 時に arena::update_score で
+        // 必ず記録されるオンチェーン値で、各プレイヤーの PlayerStats テーブルから直接読む。
+        // 獲得額（cumulative_payout）は bet::claim_* 経由分しか加算されず欠損するため使わない。
         return this.listPlayersFromTable();
     }
 
-    /** players テーブル全件を読み、獲得額（実 redeem 払戻の累計）降順・Total Bet 降順で並べる。 */
+    /** players テーブル全件を読み、Total Bet（cumulative_cost）降順で並べる。 */
     private async listPlayersFromTable(): Promise<PlayerSummary[]> {
         const arenaFields = await getObjectFields(this.config.arenaObjectId);
 
@@ -207,9 +205,6 @@ export class ContractDeepArenaClient implements DeepArenaClient {
 
         const dynamicFields = await listDynamicFields(tableId);
         if (dynamicFields.length === 0) return [];
-
-        // 獲得額は manager_id ごとの実 redeem 払戻合計（差分キャッシュ）から引く。
-        const redeemPayoutByManager = await getRedeemPayoutByManager(this.config);
 
         const BATCH_SIZE = 50;
         const players: PlayerSummary[] = [];
@@ -229,19 +224,16 @@ export class ContractDeepArenaClient implements DeepArenaClient {
                     const stats = isRecord(statsRaw) ? readFields(statsRaw, "player.stats") : null;
                     if (!stats) continue;
 
-                    // Total Bet は cumulative_cost（BET 時に必ず記録され正確）。
+                    // ランキング指標は Total Bet（cumulative_cost）。score・deposited とも同値。
                     const cost = readU64(stats.cumulative_cost, "cumulative_cost");
                     const managerId = readObjectId(stats.manager_id, "manager_id");
-
-                    // 獲得額は実 redeem 払戻の累計（binary + range）を manager_id で集計した値。
-                    const payout = (redeemPayoutByManager.get(managerId) ?? 0n).toString();
 
                     players.push({
                         address: playerAddress,
                         displayName: `${playerAddress.slice(0, 6)}...${playerAddress.slice(-4)}`,
                         rank: 0,
                         score: {
-                            atomic: payout,
+                            atomic: cost,
                             decimals: this.config.quoteDecimals,
                             symbol: this.config.quoteSymbol,
                         },
@@ -260,10 +252,8 @@ export class ContractDeepArenaClient implements DeepArenaClient {
         }
 
         players.sort((a, b) => {
-            // 獲得額（payout）降順 → 同額は Total Bet（cumulative_cost）降順。
-            const byPayout = BigInt(b.score.atomic) - BigInt(a.score.atomic);
-            if (byPayout !== 0n) return byPayout > 0n ? 1 : -1;
-            const byBet = BigInt(b.deposited.atomic) - BigInt(a.deposited.atomic);
+            // Total Bet（cumulative_cost）降順。
+            const byBet = BigInt(b.score.atomic) - BigInt(a.score.atomic);
             return byBet > 0n ? 1 : byBet < 0n ? -1 : 0;
         });
         players.forEach((p, i) => {
