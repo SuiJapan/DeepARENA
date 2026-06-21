@@ -2629,7 +2629,7 @@
       #market .amount-box{grid-template-columns:minmax(150px,.55fr) minmax(200px,1fr)!important;gap:8px!important;padding:8px 14px 11px!important}
       #market .amount-input,#market .cta-full,.arena-cta{height:40px!important;border-radius:0!important;font-family:var(--font-mono)!important;font-size:15px!important;letter-spacing:.02em!important}
       .arena-cta{font-size:9px!important;letter-spacing:.12em!important;text-transform:uppercase!important;background:var(--ink)!important;color:var(--reverse)!important;border-color:var(--ink)!important}
-      .arena-cta span{display:none!important}
+      .arena-cta span:not(.arena-cta-label):not(.arena-cta-spinner){display:none!important}
     }
 
     
@@ -4429,6 +4429,37 @@
       transform:none!important;
       background-image:none!important;
       animation:none!important;
+    }
+
+    .arena-cta.is-loading,
+    #market .arena-cta.is-loading{
+      display:inline-flex!important;
+      align-items:center!important;
+      justify-content:center!important;
+      gap:10px!important;
+      cursor:wait!important;
+      opacity:.9!important;
+    }
+
+    .arena-cta-spinner{
+      width:14px!important;
+      height:14px!important;
+      flex:0 0 auto!important;
+      border:2px solid color-mix(in srgb,var(--reverse) 34%,transparent)!important;
+      border-top-color:var(--reverse)!important;
+      border-radius:999px!important;
+      animation:arenaCtaSpin .72s linear infinite!important;
+    }
+
+    .arena-cta-label{
+      min-width:0!important;
+      overflow:hidden!important;
+      text-overflow:ellipsis!important;
+      white-space:nowrap!important;
+    }
+
+    @keyframes arenaCtaSpin{
+      to{transform:rotate(360deg)}
     }
 
     #market .plp-switch{

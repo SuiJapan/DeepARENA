@@ -47,6 +47,12 @@ function isCompactOddsLabel(value: string | null): boolean {
     return !/\d/.test(normalized);
 }
 
+function formatRangeBusyActionLabel(txStatus: string, message: string): string {
+    if (txStatus === "CONFIRM IN WALLET") return "Confirm in wallet";
+    if (message === "Preparing transaction") return "Preparing...";
+    return "Submitting...";
+}
+
 function ModeCard({
     active,
     description,
@@ -83,15 +89,17 @@ function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null })
     const selected = range.direction ?? "RANGE";
     const isRoundLocked = roundMarket?.state === "FINAL_LIVE";
     const isRoundCalculating = roundMarket?.state === "LOCKING_ROUND";
-    const actionLabel = range.isBettingOpen
-        ? range.direction
-            ? `Enter ${range.direction === "RANGE" ? "Range" : "Break"}`
-            : "Select Range Side"
-        : isRoundCalculating
-          ? "Calculating..."
-          : isRoundLocked
-            ? "Round Locked"
-            : "Betting Closed";
+    const actionLabel = range.isBusy
+        ? formatRangeBusyActionLabel(range.txStatus, range.message)
+        : range.isBettingOpen
+          ? range.direction
+              ? `Enter ${range.direction === "RANGE" ? "Range" : "Break"}`
+              : "Select Range Side"
+          : isRoundCalculating
+            ? "Calculating..."
+            : isRoundLocked
+              ? "Round Locked"
+              : "Betting Closed";
 
     return (
         <div className="panel-view active trade-view" data-panel="range">
@@ -113,7 +121,7 @@ function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null })
                 <button
                     className={`duel-choice choice-button${selected === "RANGE" ? " selected" : ""}`}
                     type="button"
-                    disabled={!range.isBettingOpen}
+                    disabled={!range.isBettingOpen || range.isBusy}
                     onClick={() => range.setDirection(range.direction === "RANGE" ? null : "RANGE")}
                 >
                     <span className="duel-name">In Range</span>
@@ -129,7 +137,7 @@ function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null })
                 <button
                     className={`duel-choice choice-button${selected === "BREAK" ? " selected" : ""}`}
                     type="button"
-                    disabled={!range.isBettingOpen}
+                    disabled={!range.isBettingOpen || range.isBusy}
                     onClick={() => range.setDirection(range.direction === "BREAK" ? null : "BREAK")}
                 >
                     <span className="duel-name">Break</span>
@@ -164,15 +172,19 @@ function RangePanel({ roundMarket }: { roundMarket: PredictRoundMarket | null })
                     </p>
                 )}
                 <button
-                    className="primary-button cta-full arena-cta"
+                    className={`primary-button cta-full arena-cta${range.isBusy ? " is-loading" : ""}`}
                     type="button"
-                    disabled={!range.canEnter}
+                    disabled={!range.canEnter || range.isBusy}
+                    aria-busy={range.isBusy}
                     onClick={() => void range.placeRangeBet()}
                 >
-                    {actionLabel}
+                    {range.isBusy ? (
+                        <span className="arena-cta-spinner" aria-hidden="true" />
+                    ) : null}
+                    <span className="arena-cta-label">{actionLabel}</span>
                 </button>
 
-                {range.txStatus === "FAILED" && range.message && (
+                {(range.isBusy || range.txStatus === "FAILED") && range.message && (
                     <p className="payout-line muted-line" aria-live="polite">
                         {range.message}
                     </p>
