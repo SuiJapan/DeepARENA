@@ -2,7 +2,6 @@
 .codex/state/
 .codex/tmp/
 .claude/worktrees/
-.claude/settings.local.json
 
 # ローカル専用の secret や生成物
 .local/
