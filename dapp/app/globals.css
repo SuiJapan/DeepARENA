@@ -2629,7 +2629,7 @@
       #market .amount-box{grid-template-columns:minmax(150px,.55fr) minmax(200px,1fr)!important;gap:8px!important;padding:8px 14px 11px!important}
       #market .amount-input,#market .cta-full,.arena-cta{height:40px!important;border-radius:0!important;font-family:var(--font-mono)!important;font-size:15px!important;letter-spacing:.02em!important}
       .arena-cta{font-size:9px!important;letter-spacing:.12em!important;text-transform:uppercase!important;background:var(--ink)!important;color:var(--reverse)!important;border-color:var(--ink)!important}
-      .arena-cta span{display:none!important}
+      .arena-cta span:not(.arena-cta-label):not(.arena-cta-spinner){display:none!important}
     }
 
     
