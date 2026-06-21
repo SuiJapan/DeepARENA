@@ -1,8 +1,10 @@
-import { handleRangeWidthPost } from "@/lib/server/predict/range-width";
-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export function POST(request: Request) {
-    return handleRangeWidthPost(request);
+export async function POST(request: Request) {
+    await request.json().catch(() => null);
+    return Response.json({
+        ok: false,
+        error: "Range width selection is temporarily unavailable",
+    });
 }
