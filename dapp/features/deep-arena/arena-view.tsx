@@ -75,7 +75,6 @@ function ModeCard({
             type="button"
             onClick={() => onSelect(mode)}
         >
-            <span className="mode-glyph" aria-hidden="true" />
             <span className="mode-no">{number}</span>
             <h3>{title}</h3>
             <p>{description}</p>
