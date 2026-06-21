@@ -4266,9 +4266,10 @@
     #market .blade-sigil-down:before{top:2px!important}
     #market .blade-sigil-up:after{top:0!important;border-left:4px solid currentColor!important;border-top:4px solid currentColor!important;border-right:0!important;border-bottom:0!important;transform:translateX(-50%) rotate(45deg)!important}
     #market .blade-sigil-down:after{bottom:0!important;border-right:4px solid currentColor!important;border-bottom:4px solid currentColor!important;border-left:0!important;border-top:0!important;transform:translateX(-50%) rotate(45deg)!important}
-    #market .duel-choice.selected .blade-sigil{color:var(--reverse)!important;filter:none!important}
+    #market .duel-choice.choice-button.selected span.blade-sigil-up{color:var(--final-cyan)!important}
+    #market .duel-choice.choice-button.selected span.blade-sigil-down{color:var(--final-danger)!important}
     #market .duel-choice:not(.selected) .blade-sigil-up{color:var(--final-cyan)!important}
-    #market .duel-choice:not(.selected) .blade-sigil-down{color:var(--muted)!important}
+    #market .duel-choice:not(.selected) .blade-sigil-down{color:var(--final-danger)!important}
     #market .compact-sentiment{padding:13px 20px!important;border-bottom:1px solid var(--line)!important}
     #market .stake-card{padding:18px 22px 20px!important}
     #market .stake-card label{margin-bottom:12px!important}
